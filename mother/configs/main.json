@@ -1,0 +1,35 @@
+{
+  "dashboard_port": 8080,
+  "fleet_port": 8765,
+  "shared_secret": "jinni_grid_secret2347890",
+
+  "validator": {
+    "enabled": true,
+    "warmup_days": 3,
+    "min_warmup_bars": 500,
+    "rolling_window": 1000
+  },
+
+  "telegram": {
+    "enabled": true,
+    "bot_token": "7320016249:AAH9wV_QttEVNnzlWw5wiqIvjWNgC1TQ4ow",
+    "chat_id": "-5448290084",
+    "send_startup": true,
+    "send_vm_online": true,
+    "send_vm_offline": true,
+    "send_every_trade": true,
+    "send_validation_mismatches": true,
+    "send_errors": true,
+    "send_daily_summary": true
+  },
+
+  "storage": {
+    "db_path": "state/fleet.db",
+    "config_history_dir": "state/config_history"
+  },
+
+  "logging": {
+    "log_dir": "logs",
+    "retention_days": 30
+  }
+}

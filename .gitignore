@@ -8,7 +8,6 @@ venv/
 env/
 
 #state
-mother/configs/*.json
 mother/state/*.db
 mother/state/*.db-journal
 mother/state/config_history/

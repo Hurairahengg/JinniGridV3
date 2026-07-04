@@ -1,0 +1,37 @@
+{
+  "vm_id": "vm1",
+  "display_name": "NY HMA Node 01",
+  "symbol": "USTEC",
+  "brick_size": 8.0,
+  "price_decimals": 2,
+  "cost_per_lot": 1.20,
+
+  "mt5": {
+    "path": null,
+    "timeout_ms": 60000
+  },
+
+  "risk": {
+    "risk_mode": "starting_balance",
+    "starting_balance": 100000.0,
+    "risk_pct": 0.4,
+    "max_lots": 600.0,
+    "min_lot": 0.01,
+    "lot_step": 0.01,
+    "max_daily_loss_usd": 5000.0,
+    "max_open_positions": 1,
+    "auto_halt_on_daily_loss": true
+  },
+
+  "session": {
+    "timezone": "CST",
+    "start_hour": 8,
+    "end_hour": 17,
+    "days": ["Mon", "Tue", "Wed", "Thu", "Fri"]
+  },
+
+  "data": {
+    "warmup_days": 3,
+    "bars_in_memory": 500
+  }
+}
