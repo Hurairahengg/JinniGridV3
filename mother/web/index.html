@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#08090c">
+<title>JinniGrid</title>
+<link rel="stylesheet" href="styles.css">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<!-- ============= APP SHELL ============= -->
+<div id="app">
+
+  <!-- ==== TOP BAR ==== -->
+  <header id="topbar">
+    <button class="icon-btn nav-toggle" id="nav-toggle" title="Toggle sidebar (\)" aria-label="Toggle sidebar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+    </button>
+    <div class="brand" onclick="location.hash='#/overview'">
+      <div class="brand-mark"></div>
+      <span class="brand-name">JINNIGRID</span>
+    </div>
+    <div class="search-box" id="search-trigger" role="button" tabindex="0">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+      </svg>
+      <span class="search-placeholder">Search anything…</span>
+      <span class="search-kbd">⌘K</span>
+    </div>
+    <div id="topbar-stats">
+      <div class="tb-stat">
+        <div class="tb-stat-label">Balance</div>
+        <div class="tb-stat-value" id="stat-balance">—</div>
+      </div>
+      <div class="tb-stat">
+        <div class="tb-stat-label">Today</div>
+        <div class="tb-stat-value" id="stat-today">—</div>
+      </div>
+      <div class="tb-stat">
+        <div class="tb-stat-label">Positions</div>
+        <div class="tb-stat-value" id="stat-positions">—</div>
+      </div>
+      <div class="tb-stat">
+        <div class="tb-stat-label">VMs</div>
+        <div class="tb-stat-value" id="stat-vms">—</div>
+      </div>
+      <div class="status-badge" id="live-status"><span>connecting…</span></div>
+      <div class="theme-wrap">
+        <button class="icon-btn" id="theme-btn" title="Theme (T)" aria-label="Theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+          </svg>
+        </button>
+        <div class="theme-menu" id="theme-menu">
+          <div class="theme-menu-title">Theme</div>
+          <div class="theme-option" data-theme="dark">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #08090c 50%, #6ea8ff 50%)"></div>
+            <span>Dark</span>
+          </div>
+          <div class="theme-option" data-theme="midnight">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #0a0612 50%, #a78bfa 50%)"></div>
+            <span>Midnight</span>
+          </div>
+          <div class="theme-option" data-theme="ocean">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #051822 50%, #06b6d4 50%)"></div>
+            <span>Ocean</span>
+          </div>
+          <div class="theme-option" data-theme="forest">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #0a1410 50%, #10b981 50%)"></div>
+            <span>Forest</span>
+          </div>
+          <div class="theme-option" data-theme="glass">
+            <div class="theme-preview glass-preview"></div>
+            <span>Glass</span>
+          </div>
+          <div class="theme-menu-divider"></div>
+          <div class="theme-option" data-theme="light">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #ffffff 50%, #3b82f6 50%); border-color: #d1d5de"></div>
+            <span>Light</span>
+          </div>
+          <div class="theme-option" data-theme="paper">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #faf7f2 50%, #92664c 50%); border-color: #d1d5de"></div>
+            <span>Paper</span>
+          </div>
+          <div class="theme-option" data-theme="mint">
+            <div class="theme-preview" style="background: linear-gradient(135deg, #f0fdf6 50%, #10b981 50%); border-color: #d1d5de"></div>
+            <span>Mint</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==== NAV RAIL ==== -->
+  <nav id="nav-rail" aria-label="Primary navigation">
+    <a class="nav-item" data-route="overview" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/>
+        <rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+      </svg>
+      <span class="nav-label">Overview</span>
+      <span class="nav-tip">Overview</span>
+    </a>
+    <a class="nav-item" data-route="live" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-6"/>
+      </svg>
+      <span class="nav-label">Live</span>
+      <span class="nav-tip">Live Chart</span>
+    </a>
+    <a class="nav-item" data-route="trades" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+        <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+        <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+      </svg>
+      <span class="nav-label">Trades</span>
+      <span class="nav-tip">Trades</span>
+    </a>
+    <a class="nav-item" data-route="stats" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+        <line x1="6" y1="20" x2="6" y2="14"/>
+      </svg>
+      <span class="nav-label">Stats</span>
+      <span class="nav-tip">Stats</span>
+    </a>
+    <a class="nav-item" data-route="fleet" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+      <span class="nav-label">Fleet</span>
+      <span class="nav-tip">Fleet</span>
+    </a>
+    <a class="nav-item" data-route="validation" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+      </svg>
+      <span class="nav-label">Validation</span>
+      <span class="nav-tip">Validation</span>
+    </a>
+    <a class="nav-item" data-route="logs" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+      </svg>
+      <span class="nav-label">Logs</span>
+      <span class="nav-tip">Logs</span>
+    </a>
+    <a class="nav-item" data-route="config" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      <span class="nav-label">Config</span>
+      <span class="nav-tip">Config</span>
+    </a>
+    <a class="nav-item" data-route="deploy" tabindex="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M5 12h14M12 5l7 7-7 7"/>
+      </svg>
+      <span class="nav-label">Deploy</span>
+      <span class="nav-tip">Deploy VM</span>
+    </a>
+  </nav>
+
+  <!-- ==== MAIN CONTENT ==== -->
+  <main id="main"></main>
+
+  <!-- ==== DETAIL PANEL (slide-in) ==== -->
+  <aside class="detail-panel" id="detail-panel" aria-hidden="true">
+    <div class="detail-header">
+      <div class="detail-title" id="detail-title">Details</div>
+      <button class="icon-btn" id="detail-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </aside>
+
+  <!-- ==== COMMAND PALETTE ==== -->
+  <div class="cmdk" id="cmdk" aria-hidden="true">
+    <div class="cmdk-scrim" data-cmdk-close></div>
+    <div class="cmdk-box">
+      <div class="cmdk-input-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input class="cmdk-input" id="cmdk-input" placeholder="Type to search commands, VMs, trades…" autocomplete="off">
+        <span class="cmdk-hint">Esc</span>
+      </div>
+      <div class="cmdk-results" id="cmdk-results"></div>
+    </div>
+  </div>
+
+  <!-- ==== TOASTS ==== -->
+  <div id="toast-container" aria-live="polite"></div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>

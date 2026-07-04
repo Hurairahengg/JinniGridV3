@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+#state
+mother/configs/*.json
+mother/state/*.db
+mother/state/*.db-journal
+mother/state/config_history/
+vm/state.db
+vm/state.db-journal
+
+*.log
+mother/logs/
+vm/logs/
+
