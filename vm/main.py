@@ -20,7 +20,6 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
 import MetaTrader5 as mt5
 import websockets
 
@@ -39,6 +38,20 @@ MT5_RETRY_MAX_SEC = 120
 MIN_WARMUP_BARS = 200
 POLL_INTERVAL_MS = 50
 
+# Load .env file if present (before reading os.environ)
+def _load_dotenv():
+    from pathlib import Path
+    env_file = Path(__file__).parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+_load_dotenv()
 
 # ============================================================
 # LOGGING
