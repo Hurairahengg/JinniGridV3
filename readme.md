@@ -25,10 +25,10 @@ Each VM needs MT5 running and logged in.
 
 Copy the vm/ folder to the VM. Create vm/.env:
 
-    MOTHER_HOST=192.168.1.100
+    MOTHER_HOST=192.168.2.105
     MOTHER_PORT=8765
     VM_ID=vm1
-    SHARED_SECRET=must_match_mother_secret
+    SHARED_SECRET=jinni_grid_secret2347890
 
 Then:
 
