@@ -31,7 +31,7 @@ from core.validator import Validator, validate_config
 # ============================================================
 # MOTHER CONFIG LOADER
 # ============================================================
-MOTHER_CONFIG_PATH = Path("configs/main.json")
+MOTHER_CONFIG_PATH = Path("config.json")
 
 
 def load_mother_config():
