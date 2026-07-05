@@ -208,6 +208,29 @@ def validate_config(cfg):
 # VM ORCHESTRATOR
 # ============================================================
 class VMEngine:
+    async def _outbound_sender_loop(self):
+        """
+        Dedicated background task that drains outbound queue and sends to mother.
+        Isolated from strategy path — mother slowness/disconnect never blocks trading.
+        """
+        while self.running:
+            try:
+                payload = await asyncio.wait_for(self._outbound_queue.get(), timeout=1.0)
+                sent = False
+                if self.mother_ws is not None and not self.mother_ws.closed:
+                    try:
+                        await self.mother_ws.send_str(json.dumps(payload))
+                        sent = True
+                    except Exception as e:
+                        self.log.debug(f"send failed: {e}")
+                if not sent:
+                    self.state.buffer_event(payload)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                self.log.error(f"Outbound sender error: {e}")
+                await asyncio.sleep(1)
+                
     def __init__(self, vm_id, mother_host, mother_port, shared_secret):
         self.vm_id = vm_id
         self.mother_host = mother_host
@@ -629,6 +652,11 @@ class VMEngine:
 
     # ---------- Mother WebSocket ----------
     async def _send_event(self, event_type, data):
+        """
+        Fire-and-forget. NEVER blocks strategy execution.
+        Enqueues to outbound queue; dedicated sender task handles delivery.
+        If queue is full (mother down for long time), spills to SQLite buffer.
+        """
         payload = {
             "type": event_type,
             "timestamp": int(time.time() * 1000),
@@ -636,14 +664,11 @@ class VMEngine:
             "message_id": str(uuid.uuid4()),
             "data": data,
         }
-        # Try live send; buffer if not connected
-        if self.mother_ws is not None:
-            try:
-                await self.mother_ws.send(json.dumps(payload))
-                return
-            except Exception:
-                pass
-        self.state.buffer_event(payload)
+        try:
+            self._outbound_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # Queue overflow — persist to disk for later drain
+            self.state.buffer_event(payload)
 
     async def _drain_buffered(self):
         rows = self.state.drain_events(500)
@@ -761,6 +786,9 @@ class VMEngine:
             self.log.info(f"Shutdown requested by mother")
             self.state.set_meta("last_shutdown", int(time.time()))
             self.running = False
+            # Outbound event queue — decouple strategy from mother comms
+            self._outbound_queue = asyncio.Queue(maxsize=10000)
+
 
         elif cmd == "GET_STATE":
             includes = data.get("include", [])
@@ -780,6 +808,8 @@ class VMEngine:
     async def heartbeat_loop(self):
         while self.running:
             try:
+                bal = self.account_balance() if self.mt5_ok else 0
+                eq = self.account_equity() if self.mt5_ok else 0
                 await self._send_event("HEARTBEAT", {
                     "current_state": "TRADING" if self.ready and not (self.halted_by_mother or self.halted_by_dd)
                                      else "WARMING_UP" if self.warming_up
@@ -788,6 +818,8 @@ class VMEngine:
                     "mt5_connected": self.mt5_ok,
                     "position_count": 1 if self.state.open_position() else 0,
                     "today_trades": len(self.state.todays_trades()),
+                    "balance": bal,       # ← ADD
+                    "equity": eq,         # ← ADD
                 })
             except Exception:
                 pass
@@ -897,7 +929,12 @@ async def main():
         await asyncio.gather(*tasks)
     except Exception as e:
         log.critical(f"Fatal: {e}\n{traceback.format_exc()}")
-
+    tasks = [
+        asyncio.create_task(engine.mother_connection_loop()),
+        asyncio.create_task(engine.heartbeat_loop()),
+        asyncio.create_task(engine.main_loop()),
+        asyncio.create_task(engine._outbound_sender_loop()),  # ADD THIS
+    ]
 
 if __name__ == "__main__":
     try:

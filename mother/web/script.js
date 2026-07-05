@@ -372,17 +372,14 @@ function vmMetrics(vm) {
 /* Canvas drawing */
 function drawSparkline(canvas, values, color) {
   if (!canvas || !values || values.length < 2) return;
-  const parent = canvas.parentElement;
-  if (!parent) return;
-  const rect = parent.getBoundingClientRect();
+  // Use canvas's OWN bounding rect (CSS-sized) not parent's
+  const rect = canvas.getBoundingClientRect();
   const w = Math.floor(rect.width);
   const h = Math.floor(rect.height);
   if (w < 10 || h < 10) return;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
@@ -398,6 +395,50 @@ function drawSparkline(canvas, values, color) {
   for (let i = 0; i < values.length; i++) {
     const x = (i / (values.length - 1)) * w;
     const y = h - ((values[i] - min) / range) * (h - 4) - 2;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawAreaChart(canvas, values, color) {
+  if (!canvas || !values || values.length < 2) return;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.floor(rect.width);
+  const h = Math.floor(rect.height);
+  if (w < 10 || h < 10) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + "66");
+  grad.addColorStop(1, color + "00");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  for (let i = 0; i < values.length; i++) {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - ((values[i] - min) / range) * (h - 24) - 12;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(w, h);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  for (let i = 0; i < values.length; i++) {
+    const x = (i / (values.length - 1)) * w;
+    const y = h - ((values[i] - min) / range) * (h - 24) - 12;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   }
@@ -567,23 +608,33 @@ function sendCommand(action, vm_id, extra = {}) {
 function handleMessage(msg) {
   const t = msg.type;
   if (t === "initial_state") {
-    const vms = { ...msg.vms };
-    for (const vid in vms) {
-      vms[vid].trades = vms[vid].trades || [];
-      vms[vid].events = vms[vid].events || [];
-      vms[vid].equity_history = vms[vid].equity_history || [];
-      vms[vid].bars = vms[vid].bars || [];
+    const incoming = { ...msg.vms };
+    const existing = { ...store.state.vms };
+    const merged = {};
+
+    for (const vid in incoming) {
+      const inc = incoming[vid];
+      const old = existing[vid] || {};
+      merged[vid] = {
+        ...old,
+        ...inc,
+        // Preserve local state when incoming payload has 0/null
+        balance: inc.balance || old.balance || 0,
+        equity: inc.equity || old.equity || 0,
+        peak_balance: inc.peak_balance || old.peak_balance || 0,
+        trades: inc.trades && inc.trades.length ? inc.trades : (old.trades || []),
+        events: inc.events && inc.events.length ? inc.events : (old.events || []),
+        equity_history: inc.equity_history && inc.equity_history.length ? inc.equity_history : (old.equity_history || []),
+        bars: old.bars || inc.bars || [],   // prefer live bars over stale DB reload
+      };
     }
-    const selected = store.state.selectedVm || Object.keys(vms)[0] || null;
-    store.set({ vms, selectedVm: selected });
-    return;
-  }
-  if (t === "vm_status_change") {
-    const vms = { ...store.state.vms };
-    if (vms[msg.vm_id]) {
-      vms[msg.vm_id] = { ...vms[msg.vm_id], status: msg.status };
-      store.set({ vms });
+    // Keep any local-only VMs that aren't in payload
+    for (const vid in existing) {
+      if (!(vid in merged)) merged[vid] = existing[vid];
     }
+
+    const selected = store.state.selectedVm || Object.keys(merged)[0] || null;
+    store.set({ vms: merged, selectedVm: selected });
     return;
   }
   if (t === "vm_event") {
@@ -620,6 +671,9 @@ function handleMessage(msg) {
       vm.position_count = d.position_count;
       vm.today_trades = d.today_trades;
       vm.last_seen = Date.now() / 1000;
+      // Update balance from heartbeat if provided
+      if (d.balance) vm.balance = d.balance;
+      if (d.equity) vm.equity = d.equity;
     } else if (et === "READY_TO_TRADE") {
       vm.status = "trading";
       vm.balance = d.mt5_balance || vm.balance;
@@ -744,7 +798,7 @@ function renderOverview() {
         <div class="kpi-card">
           <div class="kpi-label">Today WR</div>
           <div class="kpi-value">${totals.todayTrades > 0 ? totals.todayWR.toFixed(1) + "%" : "—"}</div>
-          <div class="kpi-sub"><span>${totals.todayWR >= 50 ? "above" : "below"} 50% mark</span></div>
+          <div class="kpi-sub"><span>${totals.todayTrades > 0 ? (totals.todayWR >= 20 ? "above 20% mark" : "below 20% mark") : "no trades yet"}</span></div>
         </div>
         <div class="kpi-card">
           <div class="kpi-label">Active Positions</div>
@@ -945,53 +999,148 @@ function renderLive() {
 function initLiveChart(vm) {
   const el = document.getElementById("live-chart-wrap");
   if (!el) return;
+
+  // Show placeholder if no bars yet
+  if (!vm.bars || vm.bars.length === 0) {
+    el.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:center; height:100%; flex-direction:column; gap:12px; padding: var(--space-6);">
+        <div style="font-size:40px; opacity:0.4;">📊</div>
+        <div style="color:var(--text-dim); font-family:var(--font-mono); font-size:13px; font-weight:600;">
+          Waiting for bars from ${escapeHtml(vm.vm_id)}…
+        </div>
+        <div style="color:var(--text-muted); font-size:11px; text-align:center; max-width:400px; line-height:1.5;">
+          Bars stream in real-time as the VM forms them from live ticks.
+          Historical warmup bars aren't shown here — only bars that formed since the dashboard connected.
+        </div>
+        <div style="margin-top:8px; padding:6px 12px; background:var(--bg-2); border:1px solid var(--border); border-radius:var(--radius); font-family:var(--font-mono); font-size:11px; color:var(--text-muted);">
+          Status: <span style="color:var(--text);">${escapeHtml(vm.status || 'unknown')}</span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   const bg = getCSSVar("--bg-0");
   const text = getCSSVar("--text-dim");
   const grid = getCSSVar("--bg-2");
   const border = getCSSVar("--border");
 
+  // Clear placeholder if it was showing
+  el.innerHTML = "";
+
   const chart = LightweightCharts.createChart(el, {
-    layout: { background: { type: "solid", color: bg }, textColor: text, fontFamily: getComputedStyle(document.body).fontFamily, fontSize: 11 },
-    grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-    timeScale: { borderColor: border, timeVisible: true, secondsVisible: false, rightOffset: 8 },
+    layout: {
+      background: { type: "solid", color: bg },
+      textColor: text,
+      fontFamily: getComputedStyle(document.body).fontFamily,
+      fontSize: 11
+    },
+    grid: {
+      vertLines: { color: grid },
+      horzLines: { color: grid }
+    },
+    timeScale: {
+      borderColor: border,
+      timeVisible: true,
+      secondsVisible: false,
+      rightOffset: 8
+    },
     rightPriceScale: { borderColor: border },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    width: el.clientWidth,
+    height: el.clientHeight,
   });
+
   const series = chart.addCandlestickSeries({
-    upColor: getCSSVar("--green"), downColor: getCSSVar("--red"),
-    borderUpColor: getCSSVar("--green"), borderDownColor: getCSSVar("--red"),
-    wickUpColor: getCSSVar("--green"), wickDownColor: getCSSVar("--red"),
+    upColor: getCSSVar("--green"),
+    downColor: getCSSVar("--red"),
+    borderUpColor: getCSSVar("--green"),
+    borderDownColor: getCSSVar("--red"),
+    wickUpColor: getCSSVar("--green"),
+    wickDownColor: getCSSVar("--red"),
   });
-  const mainMA = chart.addLineSeries({ color: getCSSVar("--purple"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
-  const fastMA = chart.addLineSeries({ color: getCSSVar("--cyan"), lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+
+  const mainMA = chart.addLineSeries({
+    color: getCSSVar("--purple"),
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  const fastMA = chart.addLineSeries({
+    color: getCSSVar("--cyan"),
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
 
   charts.live = { chart, series, mainMA, fastMA };
 
-  if (vm.bars && vm.bars.length > 0) {
-    series.setData(vm.bars);
+  // Deduplicate bars by timestamp (Lightweight Charts requires strictly ascending times)
+  const seenTimes = new Set();
+  const cleanBars = [];
+  for (const b of vm.bars) {
+    if (!seenTimes.has(b.time)) {
+      seenTimes.add(b.time);
+      cleanBars.push(b);
+    }
+  }
+  cleanBars.sort((a, b) => a.time - b.time);
+
+  if (cleanBars.length > 0) {
+    series.setData(cleanBars);
     updateLiveMAs();
   }
+
+  // Trade markers
   const markers = [];
   for (const t of (vm.trades || [])) {
     if (!t.entry_ts) continue;
-    markers.push({ time: t.entry_ts, position: t.direction === 1 ? "belowBar" : "aboveBar", color: t.direction === 1 ? getCSSVar("--green") : getCSSVar("--red"), shape: t.direction === 1 ? "arrowUp" : "arrowDown", text: `#${String(t.trade_id).slice(0, 6)}` });
+    markers.push({
+      time: t.entry_ts,
+      position: t.direction === 1 ? "belowBar" : "aboveBar",
+      color: t.direction === 1 ? getCSSVar("--green") : getCSSVar("--red"),
+      shape: t.direction === 1 ? "arrowUp" : "arrowDown",
+      text: `#${String(t.trade_id).slice(0, 6)}`,
+    });
     if (t.exit_ts) {
       const isWin = (t.pnl_dollars_net || 0) > 0;
-      markers.push({ time: t.exit_ts, position: "inBar", color: isWin ? getCSSVar("--green") : getCSSVar("--red"), shape: "square", text: isWin ? "W" : "L" });
+      markers.push({
+        time: t.exit_ts,
+        position: "inBar",
+        color: isWin ? getCSSVar("--green") : getCSSVar("--red"),
+        shape: "square",
+        text: isWin ? "W" : "L",
+      });
     }
   }
   markers.sort((a, b) => a.time - b.time);
-  const seen = new Set();
-  const unique = markers.filter(m => {
+  const seenMarkerTimes = new Set();
+  const uniqueMarkers = markers.filter(m => {
     let t = m.time;
-    while (seen.has(t)) t += 1;
-    m.time = t; seen.add(t); return true;
+    while (seenMarkerTimes.has(t)) t += 1;
+    m.time = t;
+    seenMarkerTimes.add(t);
+    return true;
   });
-  series.setMarkers(unique);
-  try { chart.timeScale().fitContent(); } catch {}
-  window.addEventListener("resize", () => {
-    if (charts.live) chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
-  });
+  series.setMarkers(uniqueMarkers);
+
+  try { chart.timeScale().fitContent(); } catch (e) {}
+
+  // Resize handler (removes old ones to prevent stacking)
+  if (charts.live._resizeHandler) {
+    window.removeEventListener("resize", charts.live._resizeHandler);
+  }
+  charts.live._resizeHandler = () => {
+    if (charts.live && charts.live.chart) {
+      chart.applyOptions({
+        width: el.clientWidth,
+        height: el.clientHeight
+      });
+    }
+  };
+  window.addEventListener("resize", charts.live._resizeHandler);
 }
 
 function updateLiveMAs() {

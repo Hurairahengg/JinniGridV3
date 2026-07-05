@@ -728,7 +728,18 @@ img, svg { display: block; max-width: 100%; }
 .card-body { padding: var(--space-4); }
 .card-body.tight { padding: 0; }
 
-.chart-container { height: 320px; position: relative; }
+.chart-container {
+  height: 320px;
+  width: 100%;
+  position: relative;
+}
+.chart-container.tall { height: 480px; }
+.chart-container.short { height: 220px; }
+.chart-container canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
 .chart-container.tall { height: 480px; }
 .chart-container.short { height: 220px; }
 
@@ -1199,10 +1210,11 @@ img, svg { display: block; max-width: 100%; }
 }
 .node-card-chart {
   height: 70px;
+  width: 100%;
+  display: block;
   background: var(--bg-2);
   border-radius: var(--radius);
   margin: var(--space-3) 0;
-  overflow: hidden;
   position: relative;
   z-index: 1;
 }

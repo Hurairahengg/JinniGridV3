@@ -611,13 +611,19 @@ class Mother:
             self.state.upsert_vm(vm_id, status="online", last_seen=int(time.time()))
 
         elif event_type == "HEARTBEAT":
-            self.state.upsert_vm(
-                vm_id,
-                status=data.get("current_state", "online").lower(),
-                last_seen=int(time.time()),
-                position_count=data.get("position_count", 0),
-                today_trades=data.get("today_trades", 0),
-            )
+            update = {
+                "status": data.get("current_state", "online").lower(),
+                "last_seen": int(time.time()),
+                "position_count": data.get("position_count", 0),
+                "today_trades": data.get("today_trades", 0),
+            }
+            # Persist balance from heartbeat if provided
+            if data.get("balance"):
+                update["balance"] = data["balance"]
+            if data.get("equity"):
+                update["equity"] = data["equity"]
+            self.state.upsert_vm(vm_id, **update)
+
 
         elif event_type == "AWAITING_CONFIG":
             self.state.upsert_vm(vm_id, status="awaiting_config")
