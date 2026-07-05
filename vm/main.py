@@ -193,7 +193,9 @@ def validate_config(cfg):
     for section in ("risk", "session"):
         if section not in cfg:
             raise ValueError(f"config missing section: {section}")
-        for k in requiredif k not in cfgraise ValueError(f"config missing {section}.{k}")
+        for k in required[section]:
+            if k not in cfg[section]:
+                raise ValueError(f"config missing {section}.{k}")
 
     r = cfg["risk"]
     if not (0.0 < r["risk_pct"] <= 5.0):
