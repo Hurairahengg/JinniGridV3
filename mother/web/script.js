@@ -1,4 +1,174 @@
 /* ============================================================
+   PRIVACY / CONFIG UNLOCK SYSTEM
+   ============================================================ */
+const UNLOCK = {
+  // SHA-256 hash of the actual password. GENERATE YOUR OWN.
+  // In browser console: (async()=>{const h=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("YOUR_PWD"));console.log(Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,"0")).join(""))})()
+  correctHash: "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+  logoClicks: 0,
+  themeClicks: 0,
+  submitClicksEmpty: 0,
+  stage: 0,
+  resetTimer: null,
+  unlocked: sessionStorage.getItem("jg-config-unlocked") === "1",
+};
+
+async function sha256(text) {
+  const buf = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hash))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function resetUnlockSequence() {
+  UNLOCK.logoClicks = 0;
+  UNLOCK.themeClicks = 0;
+  UNLOCK.submitClicksEmpty = 0;
+  UNLOCK.stage = 0;
+  clearTimeout(UNLOCK.resetTimer);
+  const modal = document.getElementById("unlock-modal");
+  if (modal) modal.remove();
+}
+
+function armResetTimer() {
+  clearTimeout(UNLOCK.resetTimer);
+  UNLOCK.resetTimer = setTimeout(() => {
+    if (UNLOCK.stage > 0 && UNLOCK.stage < 5) resetUnlockSequence();
+  }, 8000);
+}
+
+function hideConfigNav() {
+  if (UNLOCK.unlocked) return;
+  document.querySelectorAll('[data-route="config"]').forEach(el => {
+    el.style.display = "none";
+  });
+}
+
+function revealConfigNav() {
+  document.querySelectorAll('[data-route="config"]').forEach(el => {
+    el.style.display = "";
+  });
+}
+
+function showUnlockModal() {
+  const existing = document.getElementById("unlock-modal");
+  if (existing) existing.remove();
+
+  const modal = document.createElement("div");
+  modal.id = "unlock-modal";
+  modal.className = "unlock-modal-overlay";
+  modal.innerHTML = `
+    <div class="unlock-modal-box">
+      <div class="unlock-modal-title" id="unlock-modal-title">Access verification</div>
+      <div class="unlock-modal-subtitle" id="unlock-modal-subtitle">Enter password to unlock advanced settings</div>
+      <input type="password" class="unlock-modal-input" id="unlock-modal-input" placeholder="••••••••" autocomplete="off" spellcheck="false">
+      <div class="unlock-modal-actions">
+        <button class="btn" id="unlock-modal-cancel">Cancel</button>
+        <button class="btn primary" id="unlock-modal-submit">Submit</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  setTimeout(() => modal.classList.add("open"), 10);
+
+  const input = document.getElementById("unlock-modal-input");
+  const submitBtn = document.getElementById("unlock-modal-submit");
+  const cancelBtn = document.getElementById("unlock-modal-cancel");
+
+  setTimeout(() => input?.focus(), 100);
+
+  submitBtn.addEventListener("click", async () => {
+    const val = input.value;
+    armResetTimer();
+
+    if (UNLOCK.stage === 3) {
+      if (val === "") {
+        UNLOCK.submitClicksEmpty++;
+        if (UNLOCK.submitClicksEmpty >= 3) {
+          UNLOCK.stage = 4;
+          document.getElementById("unlock-modal-title").textContent = "🎉 Congrats!";
+          document.getElementById("unlock-modal-subtitle").textContent = "You unlocked it. Enter the real password.";
+          input.value = "";
+          input.placeholder = "real password";
+          input.focus();
+        }
+      } else {
+        resetUnlockSequence();
+        modal.remove();
+      }
+      return;
+    }
+
+    if (UNLOCK.stage === 4) {
+      if (!val) {
+        toast("Password required", "error", 2000);
+        return;
+      }
+      const hash = await sha256(val);
+      if (hash === UNLOCK.correctHash) {
+        UNLOCK.stage = 5;
+        UNLOCK.unlocked = true;
+        sessionStorage.setItem("jg-config-unlocked", "1");
+        revealConfigNav();
+        modal.remove();
+        toast("✅ Config unlocked", "success");
+      } else {
+        input.value = "";
+        toast("Access denied", "error", 2000);
+        setTimeout(() => {
+          resetUnlockSequence();
+          modal.remove();
+        }, 800);
+      }
+    }
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    resetUnlockSequence();
+    modal.remove();
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submitBtn.click();
+    if (e.key === "Escape") cancelBtn.click();
+  });
+}
+
+function initUnlockPattern() {
+  if (UNLOCK.unlocked) { revealConfigNav(); return; }
+  hideConfigNav();
+
+  const brand = document.querySelector(".brand");
+  if (brand) {
+    brand.addEventListener("click", () => {
+      armResetTimer();
+      if (UNLOCK.stage === 0) {
+        UNLOCK.logoClicks++;
+        if (UNLOCK.logoClicks >= 4) {
+          UNLOCK.stage = 1;
+          UNLOCK.logoClicks = 0;
+        }
+      }
+    });
+  }
+
+  const themeBtn = document.getElementById("theme-btn");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      armResetTimer();
+      if (UNLOCK.stage === 1) {
+        UNLOCK.themeClicks++;
+        if (UNLOCK.themeClicks >= 4) {
+          UNLOCK.stage = 3;
+          UNLOCK.themeClicks = 0;
+          setTimeout(showUnlockModal, 200);
+        }
+      }
+    });
+  }
+}
+
+/* ============================================================
    STATE STORE
    ============================================================ */
 const store = {
@@ -12,7 +182,7 @@ const store = {
     connected: false,
     tradeFilter: "all",
     tradeTimeframe: "all",
-    logFilter: {vm: "all", severity: "all"},
+    logFilter: {vm: "all", severity: "all", type: "all"},
   },
   listeners: new Set(),
   set(patch) {
@@ -79,7 +249,6 @@ function bindVmSelector(routeName) {
     const vid = sel.value;
     if (!vid) return;
     store.set({ selectedVm: vid });
-    // Reset config draft when switching VMs
     if (routeName === "config") {
       configOriginal = null;
       configDraft = null;
@@ -108,15 +277,12 @@ function fleetTotals() {
     }
   }
   return {
-    totalBalance: bal,
-    todayPnl,
-    todayTrades,
+    totalBalance: bal, todayPnl, todayTrades,
     todayWR: todayTrades > 0 ? (todayWins / todayTrades * 100) : 0,
-    positions,
-    connected,
-    vmCount: vms.length,
+    positions, connected, vmCount: vms.length,
   };
 }
+
 function vmMetrics(vm) {
   const closed = (vm.trades || []).filter(t => t.exit_ts);
   const n = closed.length;
@@ -138,27 +304,22 @@ function drawSparkline(canvas, values, color) {
   if (!canvas || !values || values.length < 2) return;
   const parent = canvas.parentElement;
   if (!parent) return;
-
   const rect = parent.getBoundingClientRect();
   const w = Math.floor(rect.width);
   const h = Math.floor(rect.height);
   if (w < 10 || h < 10) return;
-
   const dpr = window.devicePixelRatio || 1;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
-
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
-
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = "round";
@@ -172,32 +333,27 @@ function drawSparkline(canvas, values, color) {
   }
   ctx.stroke();
 }
+
 function drawAreaChart(canvas, values, color) {
   if (!canvas || !values || values.length < 2) return;
   const parent = canvas.parentElement;
   if (!parent) return;
-
   const rect = parent.getBoundingClientRect();
   const w = Math.floor(rect.width);
   const h = Math.floor(rect.height);
   if (w < 10 || h < 10) return;
-
   const dpr = window.devicePixelRatio || 1;
   canvas.width = w * dpr;
   canvas.height = h * dpr;
   canvas.style.width = w + "px";
   canvas.style.height = h + "px";
-
   const ctx = canvas.getContext("2d");
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = max - min || 1;
-
-  // Gradient fill
   const grad = ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, color + "66");
   grad.addColorStop(1, color + "00");
@@ -212,8 +368,6 @@ function drawAreaChart(canvas, values, color) {
   ctx.lineTo(w, h);
   ctx.closePath();
   ctx.fill();
-
-  // Line
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
@@ -344,7 +498,6 @@ function handleMessage(msg) {
   const t = msg.type;
   if (t === "initial_state") {
     const vms = { ...msg.vms };
-    // Ensure fields
     for (const vid in vms) {
       vms[vid].trades = vms[vid].trades || [];
       vms[vid].events = vms[vid].events || [];
@@ -405,18 +558,16 @@ function handleMessage(msg) {
       vm.events = [...vm.events, { type: et, ts: d.start_time || d.end_time, severity: "INFO", message: et }];
     } else if (et === "ERROR" || et === "WARNING") {
       vm.events = [...vm.events, {
-        type: et, ts: Date.now() / 1000,
-        severity: et,
+        type: et, ts: Date.now() / 1000, severity: et,
         message: d.error_message || d.message || "?",
       }];
     } else if (et === "CONFIG_UPDATED" || et === "CONFIG_APPLIED") {
-      // Force reload of config on next Config view render
       if (store.state.route === "config") {
         configOriginal = null;
         configDraft = null;
       }
       vm.events = [...vm.events, {
-        type: et, ts: msg.ts / 1000, severity: "INFO",
+        type: et, ts: (msg.timestamp || Date.now()) / 1000, severity: "INFO",
         message: et === "CONFIG_UPDATED" ? "Config edited from dashboard" : "Config applied on VM",
         data: d,
       }];
@@ -445,7 +596,8 @@ function handleMessage(msg) {
     if (vms[vid]) {
       const vm = { ...vms[vid] };
       vm.trades = vm.trades.map(tr => tr.trade_id === msg.trade_id ? {
-        ...tr, validation_status: msg.result.status, validation_confidence: msg.result.confidence,
+        ...tr, validation_status: msg.result.status,
+        validation_confidence: msg.result.confidence,
         validation_details: msg.result.details
       } : tr);
       vms[vid] = vm;
@@ -460,7 +612,6 @@ function handleMessage(msg) {
   if (t === "config_result") {
     if (msg.ok) {
       toast(`✅ Config saved & pushed to ${msg.vm_id}`, "success");
-      // Refresh from server on next state update
       configOriginal = null;
       configDraft = null;
     } else {
@@ -489,7 +640,6 @@ function renderOverview() {
   allTrades.sort((a, b) => (b.entry_ts || 0) - (a.entry_ts || 0));
   allEvents.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
-  // Aggregate equity time-series
   const eqMap = new Map();
   for (const v of vms) {
     for (const eq of (v.equity_history || [])) {
@@ -598,14 +748,12 @@ function renderOverview() {
     </div>
   `;
 
-  // Draw charts after layout settles
   requestAnimationFrame(() => requestAnimationFrame(() => {
     const accent = getCSSVar("--accent");
     const eqCanvas = document.getElementById("fleet-eq-chart");
     if (eqCanvas && fleetEqValues.length >= 2) {
       drawAreaChart(eqCanvas, fleetEqValues, accent);
     } else if (eqCanvas) {
-      // Show placeholder if no data yet
       const ctx = eqCanvas.getContext("2d");
       const parent = eqCanvas.parentElement;
       const rect = parent.getBoundingClientRect();
@@ -616,7 +764,6 @@ function renderOverview() {
       ctx.textAlign = "center";
       ctx.fillText("Waiting for equity data…", rect.width / 2, rect.height / 2);
     }
-
     const sparkBal = document.getElementById("spark-bal");
     if (sparkBal) {
       const allBal = vms.reduce((arr, v) => arr.concat((v.equity_history || []).map(e => e.balance)), []);
@@ -666,6 +813,8 @@ function activityHTML(e) {
     "ERROR": { c: "warn", i: "✕" },
     "WARNING": { c: "warn", i: "⚠" },
     "HALT": { c: "warn", i: "🛑" },
+    "CONFIG_UPDATED": { c: "info", i: "✎" },
+    "CONFIG_APPLIED": { c: "info", i: "✓" },
   };
   const meta = map[e.type] || { c: "info", i: "•" };
   const ts = e.ts ? new Date(e.ts * 1000).toISOString().replace("T", " ").slice(0, 16) : "—";
@@ -752,7 +901,6 @@ function initLiveChart(vm) {
     series.setData(vm.bars);
     updateLiveMAs();
   }
-  // Trade markers
   const markers = [];
   for (const t of (vm.trades || [])) {
     if (!t.entry_ts) continue;
@@ -878,9 +1026,15 @@ function renderTrades() {
 
 /* --- STATS --- */
 function renderStats() {
+  const vms = Object.values(store.state.vms);
+  if (vms.length === 0) {
+    document.getElementById("main").innerHTML = `<div class="page">${emptyState("No VMs", "Waiting for connections")}</div>`;
+    return;
+  }
+  if (!store.state.selectedVm) store.state.selectedVm = vms[0].vm_id;
   const vm = store.state.vms[store.state.selectedVm];
   if (!vm) {
-    document.getElementById("main").innerHTML = `<div class="page">${emptyState("Select a VM", "Choose one from the sidebar or Fleet page")}</div>`;
+    document.getElementById("main").innerHTML = `<div class="page">${emptyState("Select a VM", "Choose from the dropdown")}</div>`;
     return;
   }
   const m = vmMetrics(vm);
@@ -1246,7 +1400,6 @@ function renderLogs() {
   });
   document.querySelectorAll(".log-detail-row").forEach(row => {
     row.addEventListener("click", (e) => {
-      // Don't toggle if clicking a filter chip
       if (e.target.closest(".chip")) return;
       row.classList.toggle("expanded");
     });
@@ -1256,9 +1409,7 @@ function renderLogs() {
 /* --- CONFIG EDITOR --- */
 const CONFIG_SCHEMA = {
   general: {
-    icon: "⚙",
-    title: "General",
-    desc: "VM identity and instrument",
+    icon: "⚙", title: "General", desc: "VM identity and instrument",
     fields: [
       { path: "vm_id", label: "VM ID", type: "text", readonly: true, desc: "Cannot be changed" },
       { path: "display_name", label: "Display Name", type: "text", desc: "Shown in dashboard" },
@@ -1269,58 +1420,42 @@ const CONFIG_SCHEMA = {
     ],
   },
   risk: {
-    icon: "💰",
-    title: "Risk",
-    desc: "Position sizing and safety limits",
+    icon: "💰", title: "Risk", desc: "Position sizing and safety limits",
     fields: [
       { path: "risk.risk_mode", label: "Risk Mode", type: "select",
         options: ["starting_balance", "current_balance"],
         desc: "Fixed % of starting balance (prop firm) or compound on current balance" },
-      { path: "risk.starting_balance", label: "Starting Balance", type: "number", step: 1000,
-        desc: "Used when risk_mode = starting_balance" },
-      { path: "risk.risk_pct", label: "Risk %", type: "number", step: 0.05, min: 0.01, max: 5.0,
-        desc: "% per trade (0.01–5.0)" },
-      { path: "risk.max_lots", label: "Max Lots", type: "number", step: 0.01, max: 1000,
-        desc: "Hard cap on position size" },
+      { path: "risk.starting_balance", label: "Starting Balance", type: "number", step: 1000, desc: "Used when risk_mode = starting_balance" },
+      { path: "risk.risk_pct", label: "Risk %", type: "number", step: 0.05, min: 0.01, max: 5.0, desc: "% per trade (0.01–5.0)" },
+      { path: "risk.max_lots", label: "Max Lots", type: "number", step: 0.01, max: 1000, desc: "Hard cap on position size" },
       { path: "risk.min_lot", label: "Min Lot", type: "number", step: 0.01 },
       { path: "risk.lot_step", label: "Lot Step", type: "number", step: 0.01 },
-      { path: "risk.max_daily_loss_usd", label: "Daily DD Limit ($)", type: "number", step: 100,
-        desc: "Auto-halt trigger" },
+      { path: "risk.max_daily_loss_usd", label: "Daily DD Limit ($)", type: "number", step: 100, desc: "Auto-halt trigger" },
       { path: "risk.auto_halt_on_daily_loss", label: "Auto Halt on Daily DD", type: "bool" },
       { path: "risk.max_open_positions", label: "Max Open Positions", type: "number", step: 1 },
     ],
   },
   session: {
-    icon: "🕐",
-    title: "Session",
-    desc: "Trading hours and days",
+    icon: "🕐", title: "Session", desc: "Trading hours and days",
     fields: [
       { path: "session.timezone", label: "Timezone", type: "text", desc: "e.g. CST" },
       { path: "session.start_hour", label: "Start Hour", type: "number", step: 1, min: 0, max: 23 },
       { path: "session.end_hour", label: "End Hour", type: "number", step: 1, min: 0, max: 23 },
-      { path: "session.days", label: "Days", type: "days",
-        desc: "Days of week to trade" },
+      { path: "session.days", label: "Days", type: "days", desc: "Days of week to trade" },
     ],
   },
   mt5: {
-    icon: "📡",
-    title: "MT5",
-    desc: "MT5 connection settings",
+    icon: "📡", title: "MT5", desc: "MT5 connection settings",
     fields: [
-      { path: "mt5.path", label: "MT5 Path", type: "text", nullable: true,
-        desc: "Leave empty for auto-detect" },
+      { path: "mt5.path", label: "MT5 Path", type: "text", nullable: true, desc: "Leave empty for auto-detect" },
       { path: "mt5.timeout_ms", label: "Timeout (ms)", type: "number", step: 1000 },
     ],
   },
   data: {
-    icon: "📊",
-    title: "Data",
-    desc: "Warmup and memory settings",
+    icon: "📊", title: "Data", desc: "Warmup and memory settings",
     fields: [
-      { path: "data.warmup_days", label: "Warmup Days", type: "number", step: 1, min: 1, max: 30,
-        desc: "Historical tick days for warmup" },
-      { path: "data.bars_in_memory", label: "Bars in Memory", type: "number", step: 100,
-        desc: "Buffer size for rolling bars" },
+      { path: "data.warmup_days", label: "Warmup Days", type: "number", step: 1, min: 1, max: 30, desc: "Historical tick days for warmup" },
+      { path: "data.bars_in_memory", label: "Bars in Memory", type: "number", step: 100, desc: "Buffer size for rolling bars" },
     ],
   },
 };
@@ -1386,8 +1521,6 @@ function renderConfig() {
     `;
     return;
   }
-
-  // Auto-select first VM if nothing selected
   if (!store.state.selectedVm && vms.length > 0) {
     store.state.selectedVm = vms[0].vm_id;
   }
@@ -1408,7 +1541,6 @@ function renderConfig() {
     return;
   }
 
-  // Initialize draft state
   if (!configOriginal || configOriginal.vm_id !== vm.vm_id) {
     configOriginal = JSON.parse(JSON.stringify(vm.config || {}));
     configDraft = JSON.parse(JSON.stringify(vm.config || {}));
@@ -1448,7 +1580,6 @@ function renderConfig() {
     </div>
   `;
 
-  // Tab clicks — full re-render OK since inputs change per tab
   document.querySelectorAll(".config-tab").forEach(el => {
     el.addEventListener("click", () => {
       configActiveTab = el.dataset.tab;
@@ -1456,7 +1587,6 @@ function renderConfig() {
     });
   });
 
-  // Input handlers — DO NOT full-re-render (nukes focus)
   document.querySelectorAll("[data-field-path]").forEach(el => {
     const handler = (e) => {
       const target = e.target;
@@ -1473,7 +1603,6 @@ function renderConfig() {
     el.addEventListener("change", handler);
   });
 
-  // Days checkboxes
   document.querySelectorAll("[data-day]").forEach(el => {
     el.addEventListener("change", () => {
       const day = el.dataset.day;
@@ -1488,14 +1617,12 @@ function renderConfig() {
     });
   });
 
-  // Reset button
   document.getElementById("cfg-reset")?.addEventListener("click", () => {
     configDraft = JSON.parse(JSON.stringify(configOriginal));
     renderConfig();
     toast("Reset to saved config", "info");
   });
 
-  // Push button
   document.getElementById("cfg-push")?.addEventListener("click", () => {
     const currentDiff = computeConfigDiff();
     const changed = Object.keys(currentDiff).length;
@@ -1512,32 +1639,27 @@ function renderConfig() {
   bindVmSelector("config");
 }
 
-/* Runs after every keystroke — updates dirty indicators without nuking focus */
 function updateConfigDirtyState() {
   const diff = computeConfigDiff();
   const dirty = Object.keys(diff).length > 0;
 
-  // Update dirty class on each input
   document.querySelectorAll("[data-field-path]").forEach(el => {
     const path = el.dataset.fieldPath;
     if (path in diff) el.classList.add("dirty");
     else el.classList.remove("dirty");
   });
 
-  // Update subtitle count
   const subtitle = document.querySelector(".page-header .page-subtitle");
   if (subtitle) {
     const vm = store.state.vms[store.state.selectedVm];
     subtitle.textContent = `${vm.vm_id} · ${dirty ? Object.keys(diff).length + ' unsaved change' + (Object.keys(diff).length !== 1 ? 's' : '') : 'no changes'}`;
   }
 
-  // Enable/disable action buttons
   const resetBtn = document.getElementById("cfg-reset");
   const pushBtn = document.getElementById("cfg-push");
   if (resetBtn) resetBtn.disabled = !dirty;
   if (pushBtn) pushBtn.disabled = !dirty;
 
-  // Rebuild diff panel
   const existingDiff = document.querySelector(".config-diff-panel");
   const pageEl = document.querySelector(".page");
   const editorEl = document.querySelector(".config-editor");
@@ -1627,6 +1749,7 @@ function renderDiffPanel(diff) {
     </div>
   `;
 }
+
 function highlightJSON(s) {
   return escapeHtml(s)
     .replace(/(&quot;)([\w_]+)(&quot;)(:)/g, '<span class="json-key">$1$2$3</span>$4')
@@ -1658,7 +1781,7 @@ function renderDeploy() {
             <li>VM appears here in "awaiting_config" state</li>
             <li>Copy an example config and adjust for the new VM</li>
             <li>Save as <code>mother/configs/&lt;vm_id&gt;.json</code></li>
-            <li>Restart mother OR push config via dashboard (future enhancement)</li>
+            <li>Restart mother OR push config via dashboard</li>
           </ol>
           <div style="margin-top:24px;padding:16px;background:var(--bg-2);border-radius:8px;font-family:var(--font-mono);font-size:12px">
             <div class="text-muted" style="margin-bottom:8px">Quick command reference:</div>
@@ -1767,7 +1890,7 @@ const cmdkCommands = [
   { label: "Go to Fleet", route: "fleet", hint: "5" },
   { label: "Go to Validation", route: "validation", hint: "6" },
   { label: "Go to Logs", route: "logs", hint: "7" },
-  { label: "Go to Config", route: "config", hint: "8" },
+  { label: "Go to Config", route: "config", hint: "8", requiresUnlock: true },
   { label: "Go to Deploy", route: "deploy", hint: "9" },
   { label: "Cycle Theme", action: cycleTheme, hint: "T" },
   { label: "Toggle Nav", action: toggleNav, hint: "\\" },
@@ -1788,6 +1911,7 @@ function renderCmdkResults(query) {
   const q = query.toLowerCase().trim();
   const results = [];
   for (const c of cmdkCommands) {
+    if (c.requiresUnlock && !UNLOCK.unlocked) continue;
     if (!q || c.label.toLowerCase().includes(q)) results.push(c);
   }
   for (const vid of Object.keys(store.state.vms)) {
@@ -1799,7 +1923,6 @@ function renderCmdkResults(query) {
       });
     }
   }
-  // VM commands
   if (q.startsWith("halt ")) {
     const vid = q.slice(5).trim();
     if (store.state.vms[vid]) {
@@ -1812,7 +1935,6 @@ function renderCmdkResults(query) {
       results.unshift({ label: `Resume VM ${vid}`, action: () => sendCommand("resume", vid), hint: "cmd" });
     }
   }
-  // Trade IDs
   if (q.length >= 4) {
     for (const vid in store.state.vms) {
       const t = store.state.vms[vid].trades?.find(t => String(t.trade_id).includes(q));
@@ -1890,7 +2012,7 @@ let pulseTimers = new WeakMap();
 function animatePulse(el) {
   clearTimeout(pulseTimers.get(el));
   el.classList.remove("pulse");
-  void el.offsetWidth; // trigger reflow
+  void el.offsetWidth;
   el.classList.add("pulse");
   pulseTimers.set(el, setTimeout(() => el.classList.remove("pulse"), 600));
 }
@@ -1938,6 +2060,13 @@ function updateThemeMenuActive() {
    ============================================================ */
 function renderCurrentRoute() {
   const route = store.state.route;
+
+  // Block Config route if not unlocked
+  if (route === "config" && !UNLOCK.unlocked) {
+    navigate("overview");
+    return;
+  }
+
   updateNavActive(route);
   if (route !== "live" && charts.live) {
     try { charts.live.chart.remove(); } catch {}
@@ -1956,6 +2085,9 @@ function renderCurrentRoute() {
   };
   const fn = routes[route] || renderOverview;
   fn();
+
+  // Re-hide config nav after every re-render (in case DOM was rebuilt)
+  if (!UNLOCK.unlocked) hideConfigNav();
 }
 
 /* ============================================================
@@ -1993,7 +2125,11 @@ function init() {
     }
     if (e.target.tagName === "INPUT") return;
     const routeMap = { "1": "overview", "2": "live", "3": "trades", "4": "stats", "5": "fleet", "6": "validation", "7": "logs", "8": "config", "9": "deploy" };
-    if (routeMap[e.key]) navigate(routeMap[e.key]);
+    if (routeMap[e.key]) {
+      // Block config keyboard shortcut when locked
+      if (routeMap[e.key] === "config" && !UNLOCK.unlocked) return;
+      navigate(routeMap[e.key]);
+    }
     if (e.key === "t" || e.key === "T") cycleTheme();
     if (e.key === "\\") toggleNav();
     if (e.key === "Escape") {
@@ -2014,6 +2150,7 @@ function init() {
   store.set({ route });
 
   setInterval(() => { if (store.state.route === "live") updateSessionBadge(); }, 30000);
+
   // Redraw charts on resize
   let resizeTimer;
   window.addEventListener("resize", () => {
@@ -2025,6 +2162,9 @@ function init() {
       }
     }, 200);
   });
+
+  // Initialize the unlock pattern AFTER all UI is bound
+  initUnlockPattern();
 
   connectWS();
 }
