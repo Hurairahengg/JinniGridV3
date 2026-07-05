@@ -413,7 +413,7 @@ class VMEngine:
             self.day_start_balance = self.account_balance()
             self.log.info(f"Day rollover: {today}")
 
-        in_session = (cst_hour in session_hours) and (now.weekday() in active_days)
+        in_session = (cst_hour in session_hours) and (cst_weekday in active_days)
 
         if in_session and not self.session_active_wallclock:
             self.session_active_wallclock = True
