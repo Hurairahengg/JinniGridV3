@@ -57,6 +57,37 @@ function getCSSVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
+function vmSelectorHTML(currentVm, onChangeAction) {
+  const vms = Object.values(store.state.vms);
+  if (vms.length === 0) return "";
+  return `
+    <select class="config-select" id="vm-selector" style="min-width:180px;">
+      <option value="">— Select VM —</option>
+      ${vms.map(v => `
+        <option value="${escapeHtml(v.vm_id)}" ${v.vm_id === currentVm ? 'selected' : ''}>
+          ${escapeHtml(v.vm_id)} · ${escapeHtml(v.status || 'unknown')}
+        </option>
+      `).join("")}
+    </select>
+  `;
+}
+
+function bindVmSelector(routeName) {
+  const sel = document.getElementById("vm-selector");
+  if (!sel) return;
+  sel.addEventListener("change", () => {
+    const vid = sel.value;
+    if (!vid) return;
+    store.set({ selectedVm: vid });
+    // Reset config draft when switching VMs
+    if (routeName === "config") {
+      configOriginal = null;
+      configDraft = null;
+    }
+    navigate(routeName + "/" + vid);
+  });
+}
+
 /* Aggregations */
 function fleetTotals() {
   const vms = Object.values(store.state.vms);
@@ -413,7 +444,7 @@ function handleMessage(msg) {
     const vid = msg.vm_id;
     if (vms[vid]) {
       const vm = { ...vms[vid] };
-      vm.trades = vm.trades.map(tr => tr.trade_id === msg.result.trade_id ? {
+      vm.trades = vm.trades.map(tr => tr.trade_id === msg.trade_id ? {
         ...tr, validation_status: msg.result.status, validation_confidence: msg.result.confidence,
         validation_details: msg.result.details
       } : tr);
@@ -666,6 +697,7 @@ function renderLive() {
     <div class="live-container">
       <div class="live-toolbar">
         <div class="card-title">Live · ${escapeHtml(store.state.selectedVm || 'no VM')}</div>
+        <div style="margin-left:12px;">${vmSelectorHTML(store.state.selectedVm, "live")}</div>
         <div style="width:24px"></div>
         <label class="ma-toggle">
           <input type="checkbox" id="ma-main" checked>
@@ -688,6 +720,7 @@ function renderLive() {
   setTimeout(() => { initLiveChart(vm); updateSessionBadge(); }, 30);
   document.getElementById("ma-main").addEventListener("change", updateLiveMAs);
   document.getElementById("ma-fast").addEventListener("change", updateLiveMAs);
+  bindVmSelector("live");
 }
 
 function initLiveChart(vm) {
@@ -874,6 +907,7 @@ function renderStats() {
           <div class="page-title">Statistics</div>
           <div class="page-subtitle">${escapeHtml(vm.vm_id)}</div>
         </div>
+        <div>${vmSelectorHTML(store.state.selectedVm, "stats")}</div>
       </div>
       <div class="kpi-grid">
         <div class="kpi-card">
@@ -961,6 +995,7 @@ function renderStats() {
       drawAreaChart(c, vm.equity_history.map(e => e.balance), getCSSVar("--accent"));
     }
   }));
+  bindVmSelector("stats");
 }
 
 /* --- FLEET --- */
@@ -1336,11 +1371,44 @@ function computeConfigDiff() {
 }
 
 function renderConfig() {
-  const vm = store.state.vms[store.state.selectedVm];
-  if (!vm) {
-    document.getElementById("main").innerHTML = `<div class="page">${emptyState("Select a VM", "Choose one from the sidebar")}</div>`;
+  const vms = Object.values(store.state.vms);
+  if (vms.length === 0) {
+    document.getElementById("main").innerHTML = `
+      <div class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Configuration</div>
+            <div class="page-subtitle">No VMs connected</div>
+          </div>
+        </div>
+        ${emptyState("No VMs available", "Wait for a VM to connect first")}
+      </div>
+    `;
     return;
   }
+
+  // Auto-select first VM if nothing selected
+  if (!store.state.selectedVm && vms.length > 0) {
+    store.state.selectedVm = vms[0].vm_id;
+  }
+  const vm = store.state.vms[store.state.selectedVm];
+  if (!vm) {
+    document.getElementById("main").innerHTML = `
+      <div class="page">
+        <div class="page-header">
+          <div>
+            <div class="page-title">Configuration</div>
+            <div class="page-subtitle">Pick a VM to edit</div>
+          </div>
+          ${vmSelectorHTML(store.state.selectedVm, "config")}
+        </div>
+      </div>
+    `;
+    bindVmSelector("config");
+    return;
+  }
+
+  // Initialize draft state
   if (!configOriginal || configOriginal.vm_id !== vm.vm_id) {
     configOriginal = JSON.parse(JSON.stringify(vm.config || {}));
     configDraft = JSON.parse(JSON.stringify(vm.config || {}));
@@ -1355,7 +1423,8 @@ function renderConfig() {
           <div class="page-title">Configuration</div>
           <div class="page-subtitle">${escapeHtml(vm.vm_id)} · ${dirty ? Object.keys(diff).length + ' unsaved change' + (Object.keys(diff).length !== 1 ? 's' : '') : 'no changes'}</div>
         </div>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:8px; align-items:center;">
+          ${vmSelectorHTML(store.state.selectedVm, "config")}
           <button class="btn" id="cfg-reset" ${dirty ? '' : 'disabled'}>Reset</button>
           <button class="btn primary" id="cfg-push" ${dirty ? '' : 'disabled'}>Push to VM</button>
         </div>
@@ -1379,7 +1448,7 @@ function renderConfig() {
     </div>
   `;
 
-  // Tab clicks
+  // Tab clicks — full re-render OK since inputs change per tab
   document.querySelectorAll(".config-tab").forEach(el => {
     el.addEventListener("click", () => {
       configActiveTab = el.dataset.tab;
@@ -1387,21 +1456,21 @@ function renderConfig() {
     });
   });
 
-  // Input handlers
+  // Input handlers — DO NOT full-re-render (nukes focus)
   document.querySelectorAll("[data-field-path]").forEach(el => {
-    el.addEventListener("input", (e) => {
-      const path = e.target.dataset.fieldPath;
-      const type = e.target.dataset.fieldType;
-      let val = e.target.value;
-      if (type === "number") val = val === "" ? null : Number(val);
-      if (type === "bool") val = e.target.checked;
-      if (type === "days") {
-        // Handled separately below
-        return;
-      }
+    const handler = (e) => {
+      const target = e.target;
+      const path = target.dataset.fieldPath;
+      const type = target.dataset.fieldType;
+      let val;
+      if (type === "bool") val = target.checked;
+      else if (type === "number") val = target.value === "" ? null : Number(target.value);
+      else val = target.value;
       setValueByPath(configDraft, path, val);
-      renderConfig();
-    });
+      updateConfigDirtyState();
+    };
+    el.addEventListener("input", handler);
+    el.addEventListener("change", handler);
   });
 
   // Days checkboxes
@@ -1411,26 +1480,25 @@ function renderConfig() {
       const current = getValueByPath(configDraft, "session.days") || [];
       let updated;
       if (el.checked && !current.includes(day)) updated = [...current, day];
-      else if (!el.checked) updated = current.filter(d => d !== day);
-      else updated = current;
-      // Preserve order Mon-Sun
+      else updated = current.filter(d => d !== day);
       const order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
       updated.sort((a, b) => order.indexOf(a) - order.indexOf(b));
       setValueByPath(configDraft, "session.days", updated);
-      renderConfig();
+      updateConfigDirtyState();
     });
   });
 
-  // Reset
+  // Reset button
   document.getElementById("cfg-reset")?.addEventListener("click", () => {
     configDraft = JSON.parse(JSON.stringify(configOriginal));
     renderConfig();
     toast("Reset to saved config", "info");
   });
 
-  // Push
+  // Push button
   document.getElementById("cfg-push")?.addEventListener("click", () => {
-    const changed = Object.keys(diff).length;
+    const currentDiff = computeConfigDiff();
+    const changed = Object.keys(currentDiff).length;
     if (!changed) return;
     const reason = prompt(`Reason for these ${changed} change(s)?`, "manual edit");
     if (reason === null) return;
@@ -1440,6 +1508,46 @@ function renderConfig() {
     }));
     toast("Sending config to VM…", "info");
   });
+
+  bindVmSelector("config");
+}
+
+/* Runs after every keystroke — updates dirty indicators without nuking focus */
+function updateConfigDirtyState() {
+  const diff = computeConfigDiff();
+  const dirty = Object.keys(diff).length > 0;
+
+  // Update dirty class on each input
+  document.querySelectorAll("[data-field-path]").forEach(el => {
+    const path = el.dataset.fieldPath;
+    if (path in diff) el.classList.add("dirty");
+    else el.classList.remove("dirty");
+  });
+
+  // Update subtitle count
+  const subtitle = document.querySelector(".page-header .page-subtitle");
+  if (subtitle) {
+    const vm = store.state.vms[store.state.selectedVm];
+    subtitle.textContent = `${vm.vm_id} · ${dirty ? Object.keys(diff).length + ' unsaved change' + (Object.keys(diff).length !== 1 ? 's' : '') : 'no changes'}`;
+  }
+
+  // Enable/disable action buttons
+  const resetBtn = document.getElementById("cfg-reset");
+  const pushBtn = document.getElementById("cfg-push");
+  if (resetBtn) resetBtn.disabled = !dirty;
+  if (pushBtn) pushBtn.disabled = !dirty;
+
+  // Rebuild diff panel
+  const existingDiff = document.querySelector(".config-diff-panel");
+  const pageEl = document.querySelector(".page");
+  const editorEl = document.querySelector(".config-editor");
+  if (existingDiff) existingDiff.remove();
+  if (dirty && pageEl && editorEl) {
+    const tmpDiv = document.createElement("div");
+    tmpDiv.innerHTML = renderDiffPanel(diff);
+    const newPanel = tmpDiv.firstElementChild;
+    if (newPanel) pageEl.insertBefore(newPanel, editorEl);
+  }
 }
 
 function renderConfigPanel(tabKey, diff) {

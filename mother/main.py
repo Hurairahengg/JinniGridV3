@@ -491,6 +491,18 @@ class Mother:
         self.tg.startup()
 
         configs = self.cfg_mgr.list_all()
+        # Pre-populate state.vms with configured VMs (so dashboard shows them even before they connect)
+        for vm_id, cfg in configs.items():
+            if vm_id not in self.state.vms:
+                self.state.upsert_vm(
+                    vm_id,
+                    status="not_connected",
+                    symbol=cfg.get("symbol", ""),
+                    balance=0,
+                    equity=0,
+                    last_seen=0,
+                )
+        self.log.info(f"Pre-populated {len(configs)} VMs from configs")
         self.log.info(f"Loaded {len(configs)} VM configs: {list(configs.keys())}")
 
         # Try validator MT5 connection
@@ -869,21 +881,40 @@ class Mother:
         return changes
 
     async def _send_initial_state(self, ws):
-        vms = list(self.state.vms.values())
-        for vm in vms:
-            vid = vm["vm_id"]
-            vm["config"] = self.cfg_mgr.load(vid) or {}
+        # Merge state.vms with all known configs
+        all_configs = self.cfg_mgr.list_all()
+        merged = {}
+
+        # First, include every VM we have config for
+        for vm_id, cfg in all_configs.items():
+            state_data = self.state.vms.get(vm_id, {"vm_id": vm_id, "status": "not_connected"})
+            merged[vm_id] = dict(state_data)
+            merged[vm_id]["config"] = cfg
+
+        # Also include any state.vms that don't have a config yet
+        for vm_id, state_data in self.state.vms.items():
+            if vm_id not in merged:
+                merged[vm_id] = dict(state_data)
+                merged[vm_id]["config"] = {}
+
+        # Attach trades/events/equity from DB for each
+        for vm_id, vm in merged.items():
             trades = self.db.get_trades_last(500)
-            vm["trades"] = [t for t in trades if t.get("vm_id") == vid]
-            vm["events"] = self.db.get_events_last(vid, 100)
-            vm["equity_history"] = self.db.get_equity_history(vid, 500)
+            vm["trades"] = [t for t in trades if t.get("vm_id") == vm_id]
+            vm["events"] = self.db.get_events_last(vm_id, 200)
+            vm["equity_history"] = self.db.get_equity_history(vm_id, 500)
+            # Backfill missing fields
+            vm.setdefault("balance", 0)
+            vm.setdefault("equity", 0)
+            vm.setdefault("peak_balance", 0)
 
         payload = {
             "type": "initial_state",
-            "vms": {v["vm_id"]: v for v in vms},
+            "vms": merged,
             "server_time": int(time.time() * 1000),
         }
         await ws.send_str(json.dumps(payload))
+        self.log.info(f"Sent initial state with {len(merged)} VMs to dashboard")
 
     # ---------- Periodic tasks ----------
     async def stale_monitor(self):
