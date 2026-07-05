@@ -1174,15 +1174,34 @@ function updateSessionBadge() {
   const el = document.getElementById("session-badge");
   if (!el) return;
   const now = new Date();
-  const cstHour = (now.getUTCHours() - 6 + 24) % 24;
+  // Use browser-independent Central Time (auto-DST via IANA)
+  const centralParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    hour: "numeric",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(now);
+  const centralHour = parseInt(
+    centralParts.find(p => p.type === "hour").value, 10
+  ) % 24;
+  const centralWeekday = centralParts.find(p => p.type === "weekday").value;
   const NY = new Set([8, 9, 10, 11, 12, 13, 14, 15, 16]);
-  if (NY.has(cstHour)) {
-    el.className = "session-badge active";
-    el.textContent = `NY active · CST ${cstHour}:00`;
-  } else {
-    let h = 8 - cstHour; if (h <= 0) h += 24;
+  const isWeekend = (centralWeekday === "Sat" || centralWeekday === "Sun");
+
+  if (isWeekend) {
     el.className = "session-badge";
-    el.textContent = `NY closed · opens in ${h}h`;
+    el.textContent = `Weekend · NY closed`;
+    return;
+  }
+
+  if (NY.has(centralHour)) {
+    el.className = "session-badge active";
+    el.textContent = `NY active · CT ${centralHour}:00`;
+  } else {
+    let h = 8 - centralHour;
+    if (h <= 0) h += 24;
+    el.className = "session-badge";
+    el.textContent = `NY closed · opens in ${h}h (CT)`;
   }
 }
 

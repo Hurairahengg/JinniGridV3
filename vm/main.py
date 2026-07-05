@@ -141,8 +141,14 @@ class LocalState:
         }
 
     def todays_trades(self):
-        start = int(datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        """Trades since Central-time midnight (matches backtest daily boundaries)."""
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+        now_central = datetime.now(ZoneInfo("America/Chicago"))
+        midnight_central = now_central.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = int(midnight_central.timestamp())
         rows = self.conn.execute(
             "SELECT pnl_net FROM trades WHERE entry_ts>=? AND status='CLOSED'", (start,)
         ).fetchall()
@@ -372,13 +378,34 @@ class VMEngine:
 
     # ---------- Sessions / risk ----------
     def _session_check(self):
-        now = datetime.now(timezone.utc)
-        today = now.date()
-        cst_hour = (now.hour - 6) % 24
+        """
+        Wall-clock session gate. Fires SESSION_START / SESSION_END events.
+        Uses IANA `America/Chicago` for auto-DST — OS timezone is ignored.
+        """
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+
+        now_utc = datetime.now(timezone.utc)
+        now_central = now_utc.astimezone(ZoneInfo("America/Chicago"))
+        today = now_central.date()
+        cst_hour = now_central.hour
+        cst_weekday = now_central.weekday()
+
         session_hours = set(range(self.config["session"]["start_hour"],
                                     self.config["session"]["end_hour"] + 1))
         wd_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
         active_days = {wd_map[d] for d in self.config["session"]["days"]}
+
+        # Day rollover based on Central date, not UTC date
+        if self.today_date != today:
+            self.today_date = today
+            self.halted_by_dd = False
+            self.day_start_balance = self.account_balance()
+            self.log.info(f"Day rollover (Central): {today}")
+
+        in_session = (cst_hour in session_hours) and (cst_weekday in active_days)
 
         if self.today_date != today:
             self.today_date = today

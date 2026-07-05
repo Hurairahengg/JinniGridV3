@@ -333,10 +333,19 @@ class Strategy:
         return abs_idx - self.abs_start_index
 
     def _cst_hour(self, unix_ts):
-        # UTC hour → CST (UTC-6). Handles all seasons uniformly (no DST).
+        """
+        Convert unix timestamp to (central_hour, central_weekday).
+        Uses IANA timezone `America/Chicago` — auto-handles CST↔CDT.
+        OS timezone is IGNORED. Backtest and live use identical semantics.
+        """
         from datetime import datetime, timezone
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
         utc = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
-        return (utc.hour - 6) % 24, utc.weekday()
+        central = utc.astimezone(ZoneInfo("America/Chicago"))
+        return central.hour, central.weekday()
 
     def _in_session(self, unix_ts):
         h, wd = self._cst_hour(unix_ts)

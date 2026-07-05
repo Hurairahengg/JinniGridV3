@@ -40,6 +40,14 @@ def load_mother_config():
     with open(MOTHER_CONFIG_PATH) as f:
         return json.load(f)
 
+# Import zoneinfo once at module level for cleaner code
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
+CENTRAL_TZ = ZoneInfo("America/Chicago")
+
 
 MOTHER_CFG = load_mother_config()
 DASHBOARD_PORT = MOTHER_CFG["dashboard_port"]
@@ -943,9 +951,9 @@ class Mother:
                 total_bal = sum(v.get("balance", 0) for v in vms)
                 positions = sum(v.get("position_count", 0) for v in vms)
                 connected = sum(1 for v in vms if v.get("status") in ("online", "trading"))
-                start = int(datetime.now(timezone.utc).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).timestamp())
+                now_central = datetime.now(CENTRAL_TZ)
+                midnight_central = now_central.replace(hour=0, minute=0, second=0, microsecond=0)
+                start = int(midnight_central.timestamp())
                 row = self.db.conn.execute(
                     "SELECT SUM(pnl_net) FROM trades WHERE entry_time>=? AND exit_time IS NOT NULL",
                     (start,)
