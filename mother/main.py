@@ -3,9 +3,11 @@ mother/main.py — Mother orchestrator.
 
 Owns: WebSocket fleet server, HTTP dashboard server, SQLite fleet.db,
 validator (with own MT5 tick stream), config manager (per-VM), Telegram
-notifier, and event/command routing between VMs and dashboard.
+notifier with error deduplication, and event/command routing between VMs
+and dashboard.
 
 Never trades. Only observes, validates, coordinates.
+DST-aware via zoneinfo (America/Chicago) — OS timezone is irrelevant.
 """
 import asyncio
 import hashlib
@@ -25,7 +27,18 @@ from pathlib import Path
 import requests
 from aiohttp import web
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
 from core.validator import Validator, validate_config
+
+
+# ============================================================
+# TIMEZONE CONSTANTS
+# ============================================================
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 
 
 # ============================================================
@@ -40,14 +53,6 @@ def load_mother_config():
     with open(MOTHER_CONFIG_PATH) as f:
         return json.load(f)
 
-# Import zoneinfo once at module level for cleaner code
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
-
-CENTRAL_TZ = ZoneInfo("America/Chicago")
-
 
 MOTHER_CFG = load_mother_config()
 DASHBOARD_PORT = MOTHER_CFG["dashboard_port"]
@@ -59,7 +64,6 @@ DB_PATH = Path(MOTHER_CFG["storage"]["db_path"])
 LOG_DIR = Path(MOTHER_CFG["logging"]["log_dir"])
 
 # Strategy periods are LOCKED constants (hardcoded in vm/strategy.py).
-# Mother needs them for validator symbol registration only.
 LOCKED_MAIN_MA_PERIOD = 21
 LOCKED_FAST_MA_PERIOD = 14
 
@@ -82,7 +86,7 @@ def setup_logging():
 
 
 # ============================================================
-# TELEGRAM (mother-owned)
+# TELEGRAM — with error deduplication
 # ============================================================
 class Telegram:
     def __init__(self, cfg_tg):
@@ -92,6 +96,10 @@ class Telegram:
         self.opts = cfg_tg
         self._url = f"https://api.telegram.org/bot{self.token}/sendMessage" if self.token else None
         self.log = logging.getLogger("telegram")
+
+        # Error rate limiting: dedupe identical error messages within cooldown
+        self._error_cache = {}
+        self._error_cooldown = 300  # 5 minutes between duplicate sends
 
     def _send(self, text):
         if not self.enabled or not self._url:
@@ -104,6 +112,49 @@ class Telegram:
             )
         except Exception as e:
             self.log.error(f"send error: {e}")
+
+    def _dedupe_key(self, vm_id, category, msg):
+        """Hash-key for deduplication: vm_id + category + first 80 chars of msg."""
+        stub = (msg or "")[:80]
+        return (vm_id or "?", category, stub)
+
+    def _rate_limit(self, key):
+        """
+        Returns (should_send, extra_context_or_empty).
+        - First hit: send.
+        - Subsequent within cooldown: suppress.
+        - After cooldown: send summary with count and reset.
+        """
+        now = time.time()
+        entry = self._error_cache.get(key)
+
+        if entry is None:
+            self._error_cache[key] = {"first_ts": now, "last_ts": now, "count": 1}
+            return True, ""
+
+        elapsed = now - entry["first_ts"]
+        entry["count"] += 1
+        entry["last_ts"] = now
+
+        # Within cooldown → suppress
+        if elapsed < self._error_cooldown:
+            return False, ""
+
+        # Cooldown expired → send summary + reset
+        count = entry["count"]
+        summary = f"\n<i>Repeated {count}× in last {int(elapsed)}s. Muting duplicates.</i>"
+        self._error_cache[key] = {"first_ts": now, "last_ts": now, "count": 1}
+        return True, summary
+
+    def _cleanup_error_cache(self):
+        """Prune old entries to prevent memory growth."""
+        now = time.time()
+        expired = [
+            k for k, v in self._error_cache.items()
+            if now - v["last_ts"] > self._error_cooldown * 3
+        ]
+        for k in expired:
+            del self._error_cache[k]
 
     def startup(self):
         if self.opts.get("send_startup"):
@@ -150,19 +201,34 @@ class Telegram:
     def validation_alert(self, vm_id, trade_id, status, confidence):
         if not self.opts.get("send_validation_mismatches"):
             return
+        # Dedupe by vm_id + status (mismatch type)
+        key = self._dedupe_key(vm_id, "validation_" + status, "")
+        should, ctx = self._rate_limit(key)
+        if not should:
+            return
         self._send(
             f"⚠️ <b>[{vm_id}] Validation {status}</b>\n"
             f"Trade: <code>{trade_id[:12]}</code>\n"
-            f"Confidence: <code>{confidence:.1f}%</code>"
+            f"Confidence: <code>{confidence:.1f}%</code>{ctx}"
         )
 
     def error(self, vm_id, msg):
-        if self.opts.get("send_errors"):
-            self._send(f"❌ <b>[{vm_id}]</b> {msg[:400]}")
+        if not self.opts.get("send_errors"):
+            return
+        key = self._dedupe_key(vm_id, "error", msg)
+        should, ctx = self._rate_limit(key)
+        if not should:
+            return
+        self._send(f"❌ <b>[{vm_id}]</b> {(msg or '')[:400]}{ctx}")
 
     def warning(self, vm_id, msg):
-        if self.opts.get("send_errors"):
-            self._send(f"⚠️ <b>[{vm_id}]</b> {msg[:400]}")
+        if not self.opts.get("send_errors"):
+            return
+        key = self._dedupe_key(vm_id, "warning", msg)
+        should, ctx = self._rate_limit(key)
+        if not should:
+            return
+        self._send(f"⚠️ <b>[{vm_id}]</b> {(msg or '')[:400]}{ctx}")
 
 
 # ============================================================
@@ -499,7 +565,7 @@ class Mother:
         self.tg.startup()
 
         configs = self.cfg_mgr.list_all()
-        # Pre-populate state.vms with configured VMs (so dashboard shows them even before they connect)
+        # Pre-populate state.vms with configured VMs
         for vm_id, cfg in configs.items():
             if vm_id not in self.state.vms:
                 self.state.upsert_vm(
@@ -513,7 +579,7 @@ class Mother:
         self.log.info(f"Pre-populated {len(configs)} VMs from configs")
         self.log.info(f"Loaded {len(configs)} VM configs: {list(configs.keys())}")
 
-        # Try validator MT5 connection
+        # Validator MT5 setup
         if MOTHER_CFG["validator"]["enabled"]:
             try:
                 self.validator.mt5_connect()
@@ -522,7 +588,6 @@ class Mother:
         else:
             self.log.info("Validator disabled in mother config")
 
-        # Register symbols + warmup
         if self.validator.mt5_ok:
             for vm_id, cfg in configs.items():
                 self.validator.register_symbol(
@@ -625,13 +690,11 @@ class Mother:
                 "position_count": data.get("position_count", 0),
                 "today_trades": data.get("today_trades", 0),
             }
-            # Persist balance from heartbeat if provided
             if data.get("balance"):
                 update["balance"] = data["balance"]
             if data.get("equity"):
                 update["equity"] = data["equity"]
             self.state.upsert_vm(vm_id, **update)
-
 
         elif event_type == "AWAITING_CONFIG":
             self.state.upsert_vm(vm_id, status="awaiting_config")
@@ -863,7 +926,6 @@ class Mother:
                 })
                 self.log.info(f"Config updated for {vm_id}: {len(diff_summary)} field(s) changed")
 
-                # Push to VM
                 sent, err = await self.send_command_to_vm(
                     vm_id, "PUSH_CONFIG", {"full_config": cfg}
                 )
@@ -899,25 +961,21 @@ class Mother:
         all_configs = self.cfg_mgr.list_all()
         merged = {}
 
-        # First, include every VM we have config for
         for vm_id, cfg in all_configs.items():
             state_data = self.state.vms.get(vm_id, {"vm_id": vm_id, "status": "not_connected"})
             merged[vm_id] = dict(state_data)
             merged[vm_id]["config"] = cfg
 
-        # Also include any state.vms that don't have a config yet
         for vm_id, state_data in self.state.vms.items():
             if vm_id not in merged:
                 merged[vm_id] = dict(state_data)
                 merged[vm_id]["config"] = {}
 
-        # Attach trades/events/equity from DB for each
         for vm_id, vm in merged.items():
             trades = self.db.get_trades_last(500)
             vm["trades"] = [t for t in trades if t.get("vm_id") == vm_id]
             vm["events"] = self.db.get_events_last(vm_id, 200)
             vm["equity_history"] = self.db.get_equity_history(vm_id, 500)
-            # Backfill missing fields
             vm.setdefault("balance", 0)
             vm.setdefault("equity", 0)
             vm.setdefault("peak_balance", 0)
@@ -951,6 +1009,7 @@ class Mother:
                 total_bal = sum(v.get("balance", 0) for v in vms)
                 positions = sum(v.get("position_count", 0) for v in vms)
                 connected = sum(1 for v in vms if v.get("status") in ("online", "trading"))
+                # DST-aware Central Time midnight boundary
                 now_central = datetime.now(CENTRAL_TZ)
                 midnight_central = now_central.replace(hour=0, minute=0, second=0, microsecond=0)
                 start = int(midnight_central.timestamp())
@@ -967,6 +1026,15 @@ class Mother:
             except Exception as e:
                 self.log.error(f"KPI snapshot error: {e}")
             await asyncio.sleep(60)
+
+    async def _tg_cleanup_loop(self):
+        """Prune old telegram error cache entries periodically to prevent memory growth."""
+        while self.running:
+            try:
+                self.tg._cleanup_error_cache()
+            except Exception as e:
+                self.log.error(f"tg cleanup error: {e}")
+            await asyncio.sleep(300)
 
     # ---------- Run ----------
     async def run(self):
@@ -999,6 +1067,7 @@ class Mother:
             asyncio.create_task(self.validator.live_loop()),
             asyncio.create_task(self.stale_monitor()),
             asyncio.create_task(self.kpi_snapshot_loop()),
+            asyncio.create_task(self._tg_cleanup_loop()),
         ]
 
         try:
