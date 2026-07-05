@@ -105,14 +105,29 @@ function vmMetrics(vm) {
 /* Canvas drawing */
 function drawSparkline(canvas, values, color) {
   if (!canvas || !values || values.length < 2) return;
+  const parent = canvas.parentElement;
+  if (!parent) return;
+
+  const rect = parent.getBoundingClientRect();
+  const w = Math.floor(rect.width);
+  const h = Math.floor(rect.height);
+  if (w < 10 || h < 10) return;
+
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth; const h = canvas.clientHeight;
-  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+
   const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-  const min = Math.min(...values); const max = Math.max(...values);
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const range = max - min || 1;
+
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.lineJoin = "round";
@@ -121,34 +136,53 @@ function drawSparkline(canvas, values, color) {
   for (let i = 0; i < values.length; i++) {
     const x = (i / (values.length - 1)) * w;
     const y = h - ((values[i] - min) / range) * (h - 4) - 2;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   }
   ctx.stroke();
 }
 function drawAreaChart(canvas, values, color) {
   if (!canvas || !values || values.length < 2) return;
+  const parent = canvas.parentElement;
+  if (!parent) return;
+
+  const rect = parent.getBoundingClientRect();
+  const w = Math.floor(rect.width);
+  const h = Math.floor(rect.height);
+  if (w < 10 || h < 10) return;
+
   const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth; const h = canvas.clientHeight;
-  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + "px";
+  canvas.style.height = h + "px";
+
   const ctx = canvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
-  const min = Math.min(...values); const max = Math.max(...values);
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const range = max - min || 1;
+
+  // Gradient fill
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, color + "55");
+  grad.addColorStop(0, color + "66");
   grad.addColorStop(1, color + "00");
   ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.moveTo(0, h);
   for (let i = 0; i < values.length; i++) {
     const x = (i / (values.length - 1)) * w;
-    const y = h - ((values[i] - min) / range) * (h - 20) - 10;
+    const y = h - ((values[i] - min) / range) * (h - 24) - 12;
     ctx.lineTo(x, y);
   }
   ctx.lineTo(w, h);
   ctx.closePath();
   ctx.fill();
+
+  // Line
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
@@ -156,8 +190,9 @@ function drawAreaChart(canvas, values, color) {
   ctx.beginPath();
   for (let i = 0; i < values.length; i++) {
     const x = (i / (values.length - 1)) * w;
-    const y = h - ((values[i] - min) / range) * (h - 20) - 10;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    const y = h - ((values[i] - min) / range) * (h - 24) - 12;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
   }
   ctx.stroke();
 }
@@ -220,13 +255,14 @@ function applyTheme(theme) {
   localStorage.setItem("jg-theme", theme);
   const themeColorMap = {
     dark: "#08090c", midnight: "#0a0612", ocean: "#051822", forest: "#0a1410",
-    glass: "#0a0f1e", light: "#ffffff", paper: "#faf7f2", mint: "#f0fdf6"
+    glass: "#0a0f1e", light: "#ffffff", paper: "#faf7f2", mint: "#f0fdf6",
+    sunset: "#1a0a1f"
   };
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColorMap[theme] || "#08090c");
   if (charts.live) rebuildLiveChart();
 }
 function cycleTheme() {
-  const themes = ["dark", "midnight", "ocean", "forest", "glass", "light", "paper", "mint"];
+  const themes = ["dark", "midnight", "ocean", "forest", "glass", "light", "paper", "mint", "sunset"];
   const next = themes[(themes.indexOf(store.state.theme) + 1) % themes.length];
   applyTheme(next);
   store.set({ theme: next });
@@ -342,6 +378,17 @@ function handleMessage(msg) {
         severity: et,
         message: d.error_message || d.message || "?",
       }];
+    } else if (et === "CONFIG_UPDATED" || et === "CONFIG_APPLIED") {
+      // Force reload of config on next Config view render
+      if (store.state.route === "config") {
+        configOriginal = null;
+        configDraft = null;
+      }
+      vm.events = [...vm.events, {
+        type: et, ts: msg.ts / 1000, severity: "INFO",
+        message: et === "CONFIG_UPDATED" ? "Config edited from dashboard" : "Config applied on VM",
+        data: d,
+      }];
     }
     vms[vid] = vm;
     store.set({ vms });
@@ -377,6 +424,18 @@ function handleMessage(msg) {
   }
   if (t === "toast") {
     toast(msg.message, msg.level || "info");
+    return;
+  }
+  if (t === "config_result") {
+    if (msg.ok) {
+      toast(`✅ Config saved & pushed to ${msg.vm_id}`, "success");
+      // Refresh from server on next state update
+      configOriginal = null;
+      configDraft = null;
+    } else {
+      const errs = (msg.errors || []).join("; ") || "unknown";
+      toast(`❌ Config rejected: ${errs}`, "error", 6000);
+    }
     return;
   }
 }
@@ -462,7 +521,7 @@ function renderOverview() {
             <div class="card-title">VMs</div>
             <div class="card-subtitle">${vms.length} total</div>
           </div>
-          <div class="list-compact">
+          <div class="list-compact list-scrollable">
             ${vms.length === 0 ? emptyState("No VMs connected", "Waiting for first VM to come online…") :
               vms.map(v => {
                 const m = vmMetrics(v);
@@ -485,22 +544,22 @@ function renderOverview() {
         <div class="card">
           <div class="card-header">
             <div class="card-title">Recent Trades</div>
-            <div class="card-subtitle">Last 20 across fleet</div>
+            <div class="card-subtitle">Last 50 across fleet</div>
           </div>
-          <div class="list-compact">
+          <div class="list-compact list-scrollable">
             ${allTrades.length === 0 ? emptyState("No trades yet", "Waiting for signals…") :
-              allTrades.slice(0, 20).map(t => tradeRowHTML(t, true)).join("")
+              allTrades.slice(0, 50).map(t => tradeRowHTML(t, true)).join("")
             }
           </div>
         </div>
         <div class="card">
           <div class="card-header">
             <div class="card-title">Activity</div>
-            <div class="card-subtitle">Last 20 events</div>
+            <div class="card-subtitle">Last 50 events</div>
           </div>
-          <div class="list-compact">
+          <div class="list-compact list-scrollable">
             ${allEvents.length === 0 ? emptyState("No activity yet", "") :
-              allEvents.slice(0, 20).map(e => activityHTML(e)).join("")
+              allEvents.slice(0, 50).map(e => activityHTML(e)).join("")
             }
           </div>
         </div>
@@ -508,18 +567,31 @@ function renderOverview() {
     </div>
   `;
 
-  // Draw charts
-  setTimeout(() => {
+  // Draw charts after layout settles
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     const accent = getCSSVar("--accent");
     const eqCanvas = document.getElementById("fleet-eq-chart");
-    if (eqCanvas && fleetEqValues.length >= 2) drawAreaChart(eqCanvas, fleetEqValues, accent);
+    if (eqCanvas && fleetEqValues.length >= 2) {
+      drawAreaChart(eqCanvas, fleetEqValues, accent);
+    } else if (eqCanvas) {
+      // Show placeholder if no data yet
+      const ctx = eqCanvas.getContext("2d");
+      const parent = eqCanvas.parentElement;
+      const rect = parent.getBoundingClientRect();
+      eqCanvas.width = rect.width;
+      eqCanvas.height = rect.height;
+      ctx.fillStyle = getCSSVar("--text-muted");
+      ctx.font = "12px 'JetBrains Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("Waiting for equity data…", rect.width / 2, rect.height / 2);
+    }
 
     const sparkBal = document.getElementById("spark-bal");
     if (sparkBal) {
       const allBal = vms.reduce((arr, v) => arr.concat((v.equity_history || []).map(e => e.balance)), []);
       if (allBal.length >= 2) drawSparkline(sparkBal, allBal.slice(-20), accent);
     }
-  }, 30);
+  }));
 
   document.querySelectorAll("[data-vm]").forEach(el => {
     el.addEventListener("click", () => {
@@ -883,12 +955,12 @@ function renderStats() {
       </div>
     </div>
   `;
-  setTimeout(() => {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     const c = document.getElementById("stat-eq");
     if (c && vm.equity_history && vm.equity_history.length > 1) {
       drawAreaChart(c, vm.equity_history.map(e => e.balance), getCSSVar("--accent"));
     }
-  }, 30);
+  }));
 }
 
 /* --- FLEET --- */
@@ -945,14 +1017,14 @@ function renderFleet() {
       </div>
     </div>
   `;
-  setTimeout(() => {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
     for (const v of vms) {
       const c = document.getElementById(`chart-${v.vm_id}`);
       if (c && v.equity_history && v.equity_history.length > 1) {
         drawSparkline(c, v.equity_history.map(e => e.balance), getCSSVar("--accent"));
       }
     }
-  }, 30);
+  }));
   document.querySelectorAll("[data-action]").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1063,34 +1135,62 @@ function renderLogs() {
   if (filter.vm !== "all") filtered = filtered.filter(e => e.vm_id === filter.vm);
   if (filter.severity !== "all") filtered = filtered.filter(e => (e.severity || "INFO") === filter.severity);
 
+  const eventTypes = [...new Set(allEvents.map(e => e.type))].sort();
+  if (filter.type && filter.type !== "all") {
+    filtered = filtered.filter(e => e.type === filter.type);
+  }
+
   document.getElementById("main").innerHTML = `
     <div class="page">
       <div class="page-header">
         <div>
           <div class="page-title">Logs</div>
-          <div class="page-subtitle">${filtered.length} events</div>
+          <div class="page-subtitle">${filtered.length} of ${allEvents.length} events</div>
         </div>
       </div>
+
       <div class="chip-row">
-        <div class="chip ${filter.vm === 'all' ? 'active' : ''}" data-vm-filter="all">All VMs</div>
+        <span style="font-size:11px; color:var(--text-muted); align-self:center;">VM:</span>
+        <div class="chip ${filter.vm === 'all' ? 'active' : ''}" data-vm-filter="all">All</div>
         ${vms.map(v => `<div class="chip ${filter.vm === v.vm_id ? 'active' : ''}" data-vm-filter="${escapeHtml(v.vm_id)}">${escapeHtml(v.vm_id)}</div>`).join("")}
-        <div style="width:20px"></div>
-        ${["all", "INFO", "WARNING", "ERROR"].map(s =>
+      </div>
+      <div class="chip-row">
+        <span style="font-size:11px; color:var(--text-muted); align-self:center;">Severity:</span>
+        ${["all", "INFO", "WARNING", "ERROR", "CRITICAL"].map(s =>
           `<div class="chip ${filter.severity === s ? 'active' : ''}" data-sev-filter="${s}">${s}</div>`
         ).join("")}
       </div>
+      ${eventTypes.length > 0 ? `
+      <div class="chip-row">
+        <span style="font-size:11px; color:var(--text-muted); align-self:center;">Type:</span>
+        <div class="chip ${!filter.type || filter.type === 'all' ? 'active' : ''}" data-type-filter="all">All types</div>
+        ${eventTypes.slice(0, 15).map(t =>
+          `<div class="chip ${filter.type === t ? 'active' : ''}" data-type-filter="${escapeHtml(t)}">${escapeHtml(t)}</div>`
+        ).join("")}
+      </div>
+      ` : ""}
+
       <div class="card">
         <div class="list-compact">
-          ${filtered.length === 0 ? emptyState("No events match filter", "") :
-            filtered.slice(0, 500).map(e => {
+          ${filtered.length === 0 ? emptyState("No events match filters", "") :
+            filtered.slice(0, 1000).map((e, i) => {
               const ts = e.ts ? new Date(e.ts * 1000).toISOString().replace("T", " ").slice(0, 19) : "—";
+              const dataJson = e.data && Object.keys(e.data).length > 0 ? JSON.stringify(e.data, null, 2) : null;
+              const isConfigChange = e.type === "CONFIG_UPDATED";
+              const configDiff = isConfigChange && e.data?.changes ? Object.keys(e.data.changes).map(k =>
+                `<div>${escapeHtml(k)}: <span style="color:var(--red);">${escapeHtml(JSON.stringify(e.data.changes[k].old))}</span> → <span style="color:var(--green);">${escapeHtml(JSON.stringify(e.data.changes[k].new))}</span></div>`
+              ).join("") : "";
               return `
-                <div class="log-row">
+                <div class="log-detail-row" data-log-idx="${i}">
                   <div class="log-ts">${ts}</div>
                   <div class="log-type">${escapeHtml(e.type || "?")}</div>
-                  <div class="log-vm">${escapeHtml(e.vm_id || "")}</div>
+                  <div class="log-vm-tag">${escapeHtml(e.vm_id || "")}</div>
                   <div class="log-severity ${e.severity || "INFO"}">${e.severity || "INFO"}</div>
-                  <div class="log-msg">${escapeHtml(e.message || "")}</div>
+                  <div class="log-msg">
+                    ${escapeHtml(e.message || "")}
+                    ${configDiff ? `<div class="log-config-diff">${configDiff}</div>` : ""}
+                    ${dataJson ? `<pre class="log-json">${escapeHtml(dataJson)}</pre>` : ""}
+                  </div>
                 </div>
               `;
             }).join("")
@@ -1099,45 +1199,326 @@ function renderLogs() {
       </div>
     </div>
   `;
+
   document.querySelectorAll("[data-vm-filter]").forEach(el => {
     el.addEventListener("click", () => store.set({ logFilter: { ...store.state.logFilter, vm: el.dataset.vmFilter } }));
   });
   document.querySelectorAll("[data-sev-filter]").forEach(el => {
     el.addEventListener("click", () => store.set({ logFilter: { ...store.state.logFilter, severity: el.dataset.sevFilter } }));
   });
+  document.querySelectorAll("[data-type-filter]").forEach(el => {
+    el.addEventListener("click", () => store.set({ logFilter: { ...store.state.logFilter, type: el.dataset.typeFilter } }));
+  });
+  document.querySelectorAll(".log-detail-row").forEach(row => {
+    row.addEventListener("click", (e) => {
+      // Don't toggle if clicking a filter chip
+      if (e.target.closest(".chip")) return;
+      row.classList.toggle("expanded");
+    });
+  });
 }
 
-/* --- CONFIG --- */
+/* --- CONFIG EDITOR --- */
+const CONFIG_SCHEMA = {
+  general: {
+    icon: "⚙",
+    title: "General",
+    desc: "VM identity and instrument",
+    fields: [
+      { path: "vm_id", label: "VM ID", type: "text", readonly: true, desc: "Cannot be changed" },
+      { path: "display_name", label: "Display Name", type: "text", desc: "Shown in dashboard" },
+      { path: "symbol", label: "Symbol", type: "text", desc: "MT5 symbol (e.g. USTEC, NAS100)" },
+      { path: "brick_size", label: "Brick Size", type: "number", step: 0.1, desc: "Renko brick size in points" },
+      { path: "price_decimals", label: "Price Decimals", type: "number", step: 1, desc: "Decimal places" },
+      { path: "cost_per_lot", label: "Cost / Lot", type: "number", step: 0.01, desc: "Round-trip cost per lot ($)" },
+    ],
+  },
+  risk: {
+    icon: "💰",
+    title: "Risk",
+    desc: "Position sizing and safety limits",
+    fields: [
+      { path: "risk.risk_mode", label: "Risk Mode", type: "select",
+        options: ["starting_balance", "current_balance"],
+        desc: "Fixed % of starting balance (prop firm) or compound on current balance" },
+      { path: "risk.starting_balance", label: "Starting Balance", type: "number", step: 1000,
+        desc: "Used when risk_mode = starting_balance" },
+      { path: "risk.risk_pct", label: "Risk %", type: "number", step: 0.05, min: 0.01, max: 5.0,
+        desc: "% per trade (0.01–5.0)" },
+      { path: "risk.max_lots", label: "Max Lots", type: "number", step: 0.01, max: 1000,
+        desc: "Hard cap on position size" },
+      { path: "risk.min_lot", label: "Min Lot", type: "number", step: 0.01 },
+      { path: "risk.lot_step", label: "Lot Step", type: "number", step: 0.01 },
+      { path: "risk.max_daily_loss_usd", label: "Daily DD Limit ($)", type: "number", step: 100,
+        desc: "Auto-halt trigger" },
+      { path: "risk.auto_halt_on_daily_loss", label: "Auto Halt on Daily DD", type: "bool" },
+      { path: "risk.max_open_positions", label: "Max Open Positions", type: "number", step: 1 },
+    ],
+  },
+  session: {
+    icon: "🕐",
+    title: "Session",
+    desc: "Trading hours and days",
+    fields: [
+      { path: "session.timezone", label: "Timezone", type: "text", desc: "e.g. CST" },
+      { path: "session.start_hour", label: "Start Hour", type: "number", step: 1, min: 0, max: 23 },
+      { path: "session.end_hour", label: "End Hour", type: "number", step: 1, min: 0, max: 23 },
+      { path: "session.days", label: "Days", type: "days",
+        desc: "Days of week to trade" },
+    ],
+  },
+  mt5: {
+    icon: "📡",
+    title: "MT5",
+    desc: "MT5 connection settings",
+    fields: [
+      { path: "mt5.path", label: "MT5 Path", type: "text", nullable: true,
+        desc: "Leave empty for auto-detect" },
+      { path: "mt5.timeout_ms", label: "Timeout (ms)", type: "number", step: 1000 },
+    ],
+  },
+  data: {
+    icon: "📊",
+    title: "Data",
+    desc: "Warmup and memory settings",
+    fields: [
+      { path: "data.warmup_days", label: "Warmup Days", type: "number", step: 1, min: 1, max: 30,
+        desc: "Historical tick days for warmup" },
+      { path: "data.bars_in_memory", label: "Bars in Memory", type: "number", step: 100,
+        desc: "Buffer size for rolling bars" },
+    ],
+  },
+};
+
+let configDraft = null;
+let configOriginal = null;
+let configActiveTab = "general";
+
+function getValueByPath(obj, path) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+function setValueByPath(obj, path, value) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!(parts[i] in cur)) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
+function computeConfigDiff() {
+  const changes = {};
+  if (!configOriginal || !configDraft) return changes;
+  const walk = (a, b, prefix = "") => {
+    const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+    for (const k of keys) {
+      const path = prefix ? prefix + "." + k : k;
+      const av = a?.[k];
+      const bv = b?.[k];
+      if (typeof av === "object" && av && !Array.isArray(av) &&
+          typeof bv === "object" && bv && !Array.isArray(bv)) {
+        walk(av, bv, path);
+      } else if (JSON.stringify(av) !== JSON.stringify(bv)) {
+        changes[path] = { old: av, new: bv };
+      }
+    }
+  };
+  walk(configOriginal, configDraft);
+  return changes;
+}
+
 function renderConfig() {
   const vm = store.state.vms[store.state.selectedVm];
   if (!vm) {
-    document.getElementById("main").innerHTML = `<div class="page">${emptyState("Select a VM", "")}</div>`;
+    document.getElementById("main").innerHTML = `<div class="page">${emptyState("Select a VM", "Choose one from the sidebar")}</div>`;
     return;
   }
-  const cfg = JSON.parse(JSON.stringify(vm.config || {}));
-  if (cfg.mt5 && cfg.mt5.password) cfg.mt5.password = "****";
+  if (!configOriginal || configOriginal.vm_id !== vm.vm_id) {
+    configOriginal = JSON.parse(JSON.stringify(vm.config || {}));
+    configDraft = JSON.parse(JSON.stringify(vm.config || {}));
+  }
+  const diff = computeConfigDiff();
+  const dirty = Object.keys(diff).length > 0;
+
   document.getElementById("main").innerHTML = `
     <div class="page">
       <div class="page-header">
         <div>
           <div class="page-title">Configuration</div>
-          <div class="page-subtitle">${escapeHtml(vm.vm_id)} · read-only</div>
+          <div class="page-subtitle">${escapeHtml(vm.vm_id)} · ${dirty ? Object.keys(diff).length + ' unsaved change' + (Object.keys(diff).length !== 1 ? 's' : '') : 'no changes'}</div>
         </div>
-        <button class="btn" id="copy-cfg">Copy JSON</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="cfg-reset" ${dirty ? '' : 'disabled'}>Reset</button>
+          <button class="btn primary" id="cfg-push" ${dirty ? '' : 'disabled'}>Push to VM</button>
+        </div>
       </div>
-      <div class="card">
-        <div class="card-body">
-          <div class="config-json">${highlightJSON(JSON.stringify(cfg, null, 2))}</div>
+
+      ${dirty ? renderDiffPanel(diff) : ''}
+
+      <div class="config-editor">
+        <div class="config-tabs">
+          ${Object.entries(CONFIG_SCHEMA).map(([key, spec]) => `
+            <div class="config-tab ${configActiveTab === key ? 'active' : ''}" data-tab="${key}">
+              <span class="config-tab-icon">${spec.icon}</span>
+              <span>${spec.title}</span>
+            </div>
+          `).join("")}
+        </div>
+        <div class="config-panel">
+          ${renderConfigPanel(configActiveTab, diff)}
         </div>
       </div>
     </div>
   `;
-  document.getElementById("copy-cfg")?.addEventListener("click", () => {
-    navigator.clipboard.writeText(JSON.stringify(cfg, null, 2));
-    toast("Config copied", "success");
+
+  // Tab clicks
+  document.querySelectorAll(".config-tab").forEach(el => {
+    el.addEventListener("click", () => {
+      configActiveTab = el.dataset.tab;
+      renderConfig();
+    });
+  });
+
+  // Input handlers
+  document.querySelectorAll("[data-field-path]").forEach(el => {
+    el.addEventListener("input", (e) => {
+      const path = e.target.dataset.fieldPath;
+      const type = e.target.dataset.fieldType;
+      let val = e.target.value;
+      if (type === "number") val = val === "" ? null : Number(val);
+      if (type === "bool") val = e.target.checked;
+      if (type === "days") {
+        // Handled separately below
+        return;
+      }
+      setValueByPath(configDraft, path, val);
+      renderConfig();
+    });
+  });
+
+  // Days checkboxes
+  document.querySelectorAll("[data-day]").forEach(el => {
+    el.addEventListener("change", () => {
+      const day = el.dataset.day;
+      const current = getValueByPath(configDraft, "session.days") || [];
+      let updated;
+      if (el.checked && !current.includes(day)) updated = [...current, day];
+      else if (!el.checked) updated = current.filter(d => d !== day);
+      else updated = current;
+      // Preserve order Mon-Sun
+      const order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+      updated.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+      setValueByPath(configDraft, "session.days", updated);
+      renderConfig();
+    });
+  });
+
+  // Reset
+  document.getElementById("cfg-reset")?.addEventListener("click", () => {
+    configDraft = JSON.parse(JSON.stringify(configOriginal));
+    renderConfig();
+    toast("Reset to saved config", "info");
+  });
+
+  // Push
+  document.getElementById("cfg-push")?.addEventListener("click", () => {
+    const changed = Object.keys(diff).length;
+    if (!changed) return;
+    const reason = prompt(`Reason for these ${changed} change(s)?`, "manual edit");
+    if (reason === null) return;
+    ws.send(JSON.stringify({
+      type: "command", action: "push_config",
+      vm_id: vm.vm_id, config: configDraft, reason: reason || "manual edit"
+    }));
+    toast("Sending config to VM…", "info");
   });
 }
 
+function renderConfigPanel(tabKey, diff) {
+  const spec = CONFIG_SCHEMA[tabKey];
+  if (!spec) return "";
+  return `
+    <div class="config-panel-title">${spec.icon} ${spec.title}</div>
+    <div class="config-panel-desc">${spec.desc}</div>
+    ${spec.fields.map(f => renderConfigField(f, diff)).join("")}
+  `;
+}
+
+function renderConfigField(f, diff) {
+  const val = getValueByPath(configDraft, f.path);
+  const isDirty = f.path in diff;
+  const dirtyClass = isDirty ? "dirty" : "";
+  let input;
+
+  if (f.type === "bool") {
+    input = `<input type="checkbox" class="config-checkbox ${dirtyClass}"
+                     data-field-path="${f.path}" data-field-type="bool"
+                     ${val ? 'checked' : ''} ${f.readonly ? 'disabled' : ''}>`;
+  } else if (f.type === "select") {
+    input = `<select class="config-select ${dirtyClass}"
+                     data-field-path="${f.path}" data-field-type="select">
+      ${f.options.map(o => `<option value="${o}" ${val === o ? 'selected' : ''}>${o}</option>`).join("")}
+    </select>`;
+  } else if (f.type === "days") {
+    const arr = val || [];
+    const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    input = `<div style="display:flex; flex-wrap: wrap; gap: 6px;">
+      ${days.map(d => `
+        <label style="display:flex; align-items:center; gap:4px; font-size:11px;">
+          <input type="checkbox" class="config-checkbox" data-day="${d}" ${arr.includes(d) ? 'checked' : ''}>
+          <span>${d}</span>
+        </label>
+      `).join("")}
+    </div>`;
+  } else if (f.type === "number") {
+    const step = f.step ?? 1;
+    const min = f.min != null ? `min="${f.min}"` : "";
+    const max = f.max != null ? `max="${f.max}"` : "";
+    input = `<input type="number" class="config-field-input ${dirtyClass}"
+                     data-field-path="${f.path}" data-field-type="number"
+                     value="${val ?? ''}" step="${step}" ${min} ${max}
+                     ${f.readonly ? 'readonly' : ''}>`;
+  } else {
+    input = `<input type="text" class="config-field-input ${dirtyClass}"
+                     data-field-path="${f.path}" data-field-type="text"
+                     value="${escapeHtml(val ?? '')}"
+                     ${f.readonly ? 'readonly' : ''}>`;
+  }
+
+  return `
+    <div class="config-field">
+      <div class="config-field-label">
+        <div class="config-field-name">${escapeHtml(f.label)}</div>
+        ${f.desc ? `<div class="config-field-desc">${escapeHtml(f.desc)}</div>` : ''}
+      </div>
+      ${input}
+    </div>
+  `;
+}
+
+function renderDiffPanel(diff) {
+  const rows = Object.entries(diff).map(([path, change]) => `
+    <div class="config-diff-row">
+      <span class="config-diff-key">${escapeHtml(path)}</span>
+      <span class="config-diff-old">${escapeHtml(JSON.stringify(change.old))}</span>
+      <span class="config-diff-new">→ ${escapeHtml(JSON.stringify(change.new))}</span>
+    </div>
+  `).join("");
+  return `
+    <div class="config-diff-panel">
+      <div class="config-diff-title">⚠️ Pending changes (${Object.keys(diff).length})</div>
+      ${rows}
+    </div>
+  `;
+}
 function highlightJSON(s) {
   return escapeHtml(s)
     .replace(/(&quot;)([\w_]+)(&quot;)(:)/g, '<span class="json-key">$1$2$3</span>$4')
@@ -1525,6 +1906,17 @@ function init() {
   store.set({ route });
 
   setInterval(() => { if (store.state.route === "live") updateSessionBadge(); }, 30000);
+  // Redraw charts on resize
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const route = store.state.route;
+      if (route === "overview" || route === "fleet" || route === "stats") {
+        renderCurrentRoute();
+      }
+    }, 200);
+  });
 
   connectWS();
 }

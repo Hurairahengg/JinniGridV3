@@ -792,37 +792,81 @@ class Mother:
 
             if action == "halt":
                 await self.send_command_to_vm(vm_id, "HALT_TRADING", {"reason": "dashboard"})
+                self.db.insert_event(vm_id, "DASHBOARD_ACTION", "INFO",
+                                     {"action": "halt", "by": "dashboard"})
             elif action == "resume":
                 await self.send_command_to_vm(vm_id, "RESUME_TRADING", {"reason": "dashboard"})
+                self.db.insert_event(vm_id, "DASHBOARD_ACTION", "INFO",
+                                     {"action": "resume", "by": "dashboard"})
             elif action == "close_all":
-                await self.send_command_to_vm(
-                    vm_id, "CLOSE_ALL_POSITIONS",
-                    {"reason": "dashboard", "close_type": "market"}
-                )
+                await self.send_command_to_vm(vm_id, "CLOSE_ALL_POSITIONS",
+                                              {"reason": "dashboard", "close_type": "market"})
+                self.db.insert_event(vm_id, "DASHBOARD_ACTION", "INFO",
+                                     {"action": "close_all", "by": "dashboard"})
             elif action == "shutdown":
-                await self.send_command_to_vm(
-                    vm_id, "SHUTDOWN", {"graceful": True, "delay_seconds": 0}
-                )
+                await self.send_command_to_vm(vm_id, "SHUTDOWN",
+                                              {"graceful": True, "delay_seconds": 0})
+                self.db.insert_event(vm_id, "DASHBOARD_ACTION", "WARNING",
+                                     {"action": "shutdown", "by": "dashboard"})
+
             elif action == "push_config":
                 cfg = msg.get("config")
-                if cfg:
-                    ok, errors, warnings = self.cfg_mgr.save(
-                        vm_id, cfg, changed_by="dashboard", reason=msg.get("reason", "manual")
-                    )
-                    if not ok:
-                        await ws.send_json({
-                            "type": "config_result", "vm_id": vm_id,
-                            "ok": False, "errors": errors, "warnings": warnings
-                        })
-                        return
-                    sent, err = await self.send_command_to_vm(
-                        vm_id, "PUSH_CONFIG", {"full_config": cfg}
-                    )
+                reason = msg.get("reason", "manual edit via dashboard")
+
+                # Capture diff for logs
+                old_cfg = self.cfg_mgr.load(vm_id) or {}
+                diff_summary = self._diff_summary(old_cfg, cfg)
+
+                ok, errors, warnings = self.cfg_mgr.save(
+                    vm_id, cfg, changed_by="dashboard", reason=reason
+                )
+                if not ok:
                     await ws.send_json({
                         "type": "config_result", "vm_id": vm_id,
-                        "ok": sent, "errors": [] if sent else [err],
-                        "warnings": warnings
+                        "ok": False, "errors": errors, "warnings": warnings
                     })
+                    self.db.insert_event(vm_id, "CONFIG_REJECTED", "ERROR",
+                                         {"errors": errors, "reason": reason})
+                    return
+
+                # Log config change with diff details
+                self.db.insert_event(vm_id, "CONFIG_UPDATED", "INFO", {
+                    "changes": diff_summary,
+                    "reason": reason,
+                    "by": "dashboard",
+                })
+                self.log.info(f"Config updated for {vm_id}: {len(diff_summary)} field(s) changed")
+
+                # Push to VM
+                sent, err = await self.send_command_to_vm(
+                    vm_id, "PUSH_CONFIG", {"full_config": cfg}
+                )
+                await ws.send_json({
+                    "type": "config_result", "vm_id": vm_id,
+                    "ok": sent, "errors": [] if sent else [err],
+                    "warnings": warnings
+                })
+                if sent:
+                    self.db.insert_event(vm_id, "CONFIG_PUSHED", "INFO", {
+                        "reason": reason, "delivered": True
+                    })
+                    await self._broadcast_dashboard({
+                        "type": "toast", "level": "success",
+                        "message": f"Config pushed to {vm_id}"
+                    })
+
+    def _diff_summary(self, old, new, prefix=""):
+        """Return a flat dict of {path: (old_val, new_val)} for changed fields."""
+        changes = {}
+        for k in set(list(old.keys()) + list(new.keys())):
+            path = f"{prefix}.{k}" if prefix else k
+            old_v = old.get(k)
+            new_v = new.get(k)
+            if isinstance(old_v, dict) and isinstance(new_v, dict):
+                changes.update(self._diff_summary(old_v, new_v, path))
+            elif old_v != new_v:
+                changes[path] = {"old": old_v, "new": new_v}
+        return changes
 
     async def _send_initial_state(self, ws):
         vms = list(self.state.vms.values())
