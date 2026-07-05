@@ -5,7 +5,8 @@ Owns: MT5 connection, tick loop, bar building via strategy.RenkoBuilder,
 signal execution, position management, mother WebSocket link, local SQLite,
 event streaming, resume-on-restart.
 
-Never touches: dashboard, validation, HTML.
+Strategy execution is DECOUPLED from mother comms via an outbound queue.
+Trading NEVER waits for network I/O.
 """
 import asyncio
 import json
@@ -20,8 +21,9 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
 import MetaTrader5 as mt5
-import websockets
+import aiohttp
 
 from strategy import RenkoBuilder, Strategy
 
@@ -30,7 +32,7 @@ from strategy import RenkoBuilder, Strategy
 # CONSTANTS
 # ============================================================
 HEARTBEAT_INTERVAL_SEC = 30
-BAR_BROADCAST_MIN_INTERVAL = 1.0   # seconds — throttle BAR_FORMED events
+BAR_BROADCAST_MIN_INTERVAL = 1.0
 WS_RETRY_BASE_SEC = 2
 WS_RETRY_MAX_SEC = 60
 MT5_RETRY_BASE_SEC = 5
@@ -38,9 +40,11 @@ MT5_RETRY_MAX_SEC = 120
 MIN_WARMUP_BARS = 200
 POLL_INTERVAL_MS = 50
 
-# Load .env file if present (before reading os.environ)
+
+# ============================================================
+# .ENV LOADER
+# ============================================================
 def _load_dotenv():
-    from pathlib import Path
     env_file = Path(__file__).parent / ".env"
     if not env_file.exists():
         return
@@ -52,6 +56,7 @@ def _load_dotenv():
         os.environ.setdefault(key.strip(), value.strip())
 
 _load_dotenv()
+
 
 # ============================================================
 # LOGGING
@@ -136,7 +141,8 @@ class LocalState:
         }
 
     def todays_trades(self):
-        start = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        start = int(datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp())
         rows = self.conn.execute(
             "SELECT pnl_net FROM trades WHERE entry_ts>=? AND status='CLOSED'", (start,)
         ).fetchall()
@@ -172,25 +178,22 @@ class LocalState:
 
 
 # ============================================================
-# CONFIG SCHEMA VALIDATION
+# CONFIG VALIDATION
 # ============================================================
 def validate_config(cfg):
-    """Validate the per-VM config (no strategy block anymore — strategy is locked)."""
+    """Validate the per-VM config (strategy is locked, not in config)."""
     required = {
         "_top": ["symbol", "brick_size", "price_decimals", "cost_per_lot"],
         "risk": ["risk_pct", "max_lots"],
         "session": ["start_hour", "end_hour", "days"],
     }
-    # Top-level fields
     for k in required["_top"]:
         if k not in cfg:
             raise ValueError(f"config missing: {k}")
     for section in ("risk", "session"):
         if section not in cfg:
             raise ValueError(f"config missing section: {section}")
-        for k in required[section]:
-            if k not in cfg[section]:
-                raise ValueError(f"config missing {section}.{k}")
+        for k in requiredif k not in cfgraise ValueError(f"config missing {section}.{k}")
 
     r = cfg["risk"]
     if not (0.0 < r["risk_pct"] <= 5.0):
@@ -204,33 +207,11 @@ def validate_config(cfg):
 
     return cfg
 
+
 # ============================================================
 # VM ORCHESTRATOR
 # ============================================================
 class VMEngine:
-    async def _outbound_sender_loop(self):
-        """
-        Dedicated background task that drains outbound queue and sends to mother.
-        Isolated from strategy path — mother slowness/disconnect never blocks trading.
-        """
-        while self.running:
-            try:
-                payload = await asyncio.wait_for(self._outbound_queue.get(), timeout=1.0)
-                sent = False
-                if self.mother_ws is not None and not self.mother_ws.closed:
-                    try:
-                        await self.mother_ws.send_str(json.dumps(payload))
-                        sent = True
-                    except Exception as e:
-                        self.log.debug(f"send failed: {e}")
-                if not sent:
-                    self.state.buffer_event(payload)
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                self.log.error(f"Outbound sender error: {e}")
-                await asyncio.sleep(1)
-                
     def __init__(self, vm_id, mother_host, mother_port, shared_secret):
         self.vm_id = vm_id
         self.mother_host = mother_host
@@ -257,18 +238,24 @@ class VMEngine:
         self.session_active_reported = False
 
         self.mother_ws = None
-        self.last_bar_broadcast = {}          # symbol -> ts
+        self.last_bar_broadcast = {}
         self.pending_config_event = asyncio.Event()
 
-        # Absolute bar count across the run
         self.abs_bar_count = 0
+
+        # CRITICAL: outbound queue for non-blocking event send
+        # Strategy execution never waits for mother comms
+        self._outbound_queue = asyncio.Queue(maxsize=10000)
+
+        self._last_msc = 0
+        self._is_warming_up = True
 
     # ---------- Config load / apply ----------
     def load_local_config(self):
         try:
             with open("config.json") as f:
                 data = json.load(f)
-            if data and "strategy" in data:
+            if data and "symbol" in data:
                 self.apply_config(data)
                 return True
         except Exception as e:
@@ -281,14 +268,13 @@ class VMEngine:
         self.symbol = cfg["symbol"]
         with open("config.json", "w") as f:
             json.dump(cfg, f, indent=2)
-        # Build engines — strategy uses LOCKED constants, no strategy block needed
         self.renko = RenkoBuilder(
             brick_size=cfg["brick_size"],
             price_decimals=cfg.get("price_decimals", 2),
-            rev_bricks=Strategy.RENKO_REV_BRICKS,       # ← from Strategy constants
-            clean_mode=Strategy.RENKO_CLEAN_MODE,       # ← from Strategy constants
+            rev_bricks=Strategy.RENKO_REV_BRICKS,
+            clean_mode=Strategy.RENKO_CLEAN_MODE,
         )
-        self.strategy = Strategy(cfg["session"])         # ← only session passed
+        self.strategy = Strategy(cfg["session"])
         self.log.info(f"Config applied. Symbol={self.symbol} brick={cfg['brick_size']}")
 
     # ---------- MT5 ----------
@@ -346,7 +332,6 @@ class VMEngine:
 
         self.log.info(f"Feeding {len(ticks):,} warmup ticks...")
 
-        # Collect bars into strategy's history (bulk-load, then set abs_start_index=0)
         bars = []
         required = MIN_WARMUP_BARS
         last_progress_report = time.time()
@@ -363,7 +348,6 @@ class VMEngine:
             for b in new_bricks:
                 bars.append(b)
 
-            # Broadcast progress every 2s
             if time.time() - last_progress_report >= 2:
                 await self._send_event("WARMUP_PROGRESS", {
                     "symbol": self.symbol,
@@ -372,7 +356,6 @@ class VMEngine:
                 })
                 last_progress_report = time.time()
 
-        # Load into strategy
         self.abs_bar_count = len(bars)
         self.strategy.prepend_history(bars, abs_start_index=0)
 
@@ -387,7 +370,6 @@ class VMEngine:
 
     # ---------- Sessions / risk ----------
     def _session_check(self):
-        """Wall-clock session gate. Fires SESSION_START / SESSION_END events."""
         now = datetime.now(timezone.utc)
         today = now.date()
         cst_hour = (now.hour - 6) % 24
@@ -396,7 +378,6 @@ class VMEngine:
         wd_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
         active_days = {wd_map[d] for d in self.config["session"]["days"]}
 
-        # Day rollover
         if self.today_date != today:
             self.today_date = today
             self.halted_by_dd = False
@@ -446,11 +427,10 @@ class VMEngine:
         self.abs_bar_count += 1
         self.strategy.append_brick(brick)
 
-        # Throttled BAR_FORMED broadcast
+        # Throttled BAR_FORMED broadcast (non-blocking via queue)
         now = time.time()
         last = self.last_bar_broadcast.get(self.symbol, 0)
         if now - last >= BAR_BROADCAST_MIN_INTERVAL:
-            # Compute current MA values for the dashboard
             closes = [b["close"] for b in self.strategy.bars]
             main_ma = self.strategy.main_hma._compute(closes)
             fast_ma = self.strategy.fast_hma._compute(closes)
@@ -465,20 +445,6 @@ class VMEngine:
         # Handle exit first if in position
         position = self.state.open_position()
         if position:
-            exit_sig = self.strategy.evaluate(
-                live_session_active=self.session_active_wallclock,
-                in_position=True,
-                position={
-                    "direction": position["direction"],
-                    "sl_price": position["sl_price"],
-                    "entry_abs_index": self.abs_bar_count -
-                        (len(self.strategy.bars) -
-                         self.strategy.bars.index({**self.strategy.bars[-1]})),
-                    # Fallback — use entry_bar_idx we stored on OPEN if available
-                }
-            )
-            # Simpler: reconstruct entry_abs_index from stored trade
-            # (we track abs count at entry when we insert the trade)
             exit_sig = self._recompute_exit(position)
             if exit_sig:
                 await self._handle_exit(position, exit_sig)
@@ -498,10 +464,9 @@ class VMEngine:
         await self._handle_open(signal)
 
     def _recompute_exit(self, position):
-        """Uses strategy._check_exit with proper abs index derived from stored trade."""
         entry_abs_idx = int(self.state.get_meta(f"entry_abs_idx_{position['trade_id']}", -1))
         if entry_abs_idx < 0:
-            entry_abs_idx = self.abs_bar_count - 1  # fallback
+            entry_abs_idx = self.abs_bar_count - 1
         return self.strategy._check_exit({
             "direction": position["direction"],
             "sl_price": position["sl_price"],
@@ -509,7 +474,6 @@ class VMEngine:
         })
 
     async def _handle_open(self, signal):
-        # Risk sizing
         risk_mode = self.config["risk"].get("risk_mode", "starting_balance")
         risk_pct = self.config["risk"]["risk_pct"]
         starting_bal = self.config["risk"].get("starting_balance", self.account_balance())
@@ -527,7 +491,6 @@ class VMEngine:
         lots = math.floor(raw_lots / lot_step) * lot_step
         lots = max(min_lot, min(max_lot, lots))
 
-        # Broker min stop check
         info = mt5.symbol_info(self.symbol)
         if info is not None:
             min_stop = info.trade_stops_level * info.point
@@ -535,7 +498,6 @@ class VMEngine:
                 self.log.warning(f"SL dist {sl_dist} < broker min {min_stop}, skip")
                 return
 
-        # Place order
         try:
             result = self._mt5_open(signal.direction, lots, signal.sl_price)
         except Exception as e:
@@ -549,7 +511,6 @@ class VMEngine:
         trade_id = str(uuid.uuid4())
         cost = self.config.get("cost_per_lot", 1.20) * lots
 
-        # Persist trade
         self.state.insert_trade({
             "trade_id": trade_id, "direction": signal.direction, "symbol": self.symbol,
             "entry_ts": signal.entry_brick["time"], "entry_price": signal.entry_price,
@@ -650,12 +611,14 @@ class VMEngine:
 
         self._check_daily_dd()
 
-    # ---------- Mother WebSocket ----------
+    # ============================================================
+    # MOTHER COMMS — DECOUPLED FROM STRATEGY
+    # ============================================================
     async def _send_event(self, event_type, data):
         """
         Fire-and-forget. NEVER blocks strategy execution.
         Enqueues to outbound queue; dedicated sender task handles delivery.
-        If queue is full (mother down for long time), spills to SQLite buffer.
+        If queue is full, spills to SQLite buffer for later replay.
         """
         payload = {
             "type": event_type,
@@ -667,17 +630,40 @@ class VMEngine:
         try:
             self._outbound_queue.put_nowait(payload)
         except asyncio.QueueFull:
-            # Queue overflow — persist to disk for later drain
             self.state.buffer_event(payload)
 
+    async def _outbound_sender_loop(self):
+        """
+        Dedicated background task drains outbound queue and sends to mother.
+        Isolated from strategy path — mother slowness/disconnect never blocks trading.
+        """
+        while self.running:
+            try:
+                payload = await asyncio.wait_for(self._outbound_queue.get(), timeout=1.0)
+                sent = False
+                if self.mother_ws is not None and not self.mother_ws.closed:
+                    try:
+                        await self.mother_ws.send_str(json.dumps(payload))
+                        sent = True
+                    except Exception as e:
+                        self.log.debug(f"send failed: {e}")
+                if not sent:
+                    self.state.buffer_event(payload)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                self.log.error(f"Outbound sender error: {e}")
+                await asyncio.sleep(1)
+
     async def _drain_buffered(self):
+        """Replay events that were buffered while mother was disconnected."""
         rows = self.state.drain_events(500)
         if not rows:
             return
         sent_ids = []
         for row_id, payload_str in rows:
             try:
-                await self.mother_ws.send(payload_str)
+                await self.mother_ws.send_str(payload_str)
                 sent_ids.append(row_id)
             except Exception:
                 break
@@ -686,48 +672,55 @@ class VMEngine:
             self.log.info(f"Replayed {len(sent_ids)} buffered events")
 
     async def mother_connection_loop(self):
-        """Persistent link to mother with exponential backoff."""
+        """Persistent aiohttp WebSocket link to mother with exponential backoff."""
         backoff = WS_RETRY_BASE_SEC
         while self.running:
             try:
                 uri = f"ws://{self.mother_host}:{self.mother_port}/fleet"
                 self.log.info(f"Connecting to mother: {uri}")
-                async with websockets.connect(uri, ping_interval=20, ping_timeout=15) as ws:
-                    self.mother_ws = ws
-                    backoff = WS_RETRY_BASE_SEC
 
-                    # Handshake
-                    await ws.send(json.dumps({
-                        "type": "HANDSHAKE",
-                        "vm_id": self.vm_id,
-                        "shared_secret": self.shared_secret,
-                        "timestamp": int(time.time() * 1000),
-                    }))
-                    ack = await asyncio.wait_for(ws.recv(), timeout=10)
-                    ack_data = json.loads(ack)
-                    if ack_data.get("type") != "HANDSHAKE_OK":
-                        raise RuntimeError(f"Handshake rejected: {ack_data}")
+                async with aiohttp.ClientSession() as session:
+                    async with session.ws_connect(uri, heartbeat=30, autoping=True, timeout=15) as ws:
+                        self.mother_ws = ws
+                        backoff = WS_RETRY_BASE_SEC
 
-                    # Announce online
-                    await self._send_event("VM_ONLINE", {
-                        "version": "1.0",
-                        "capabilities": ["trade", "renko8", "hma"],
-                        "last_shutdown_time": self.state.get_meta("last_shutdown", 0),
-                    })
+                        # Handshake
+                        await ws.send_str(json.dumps({
+                            "type": "HANDSHAKE",
+                            "vm_id": self.vm_id,
+                            "shared_secret": self.shared_secret,
+                            "timestamp": int(time.time() * 1000),
+                        }))
+                        ack_msg = await asyncio.wait_for(ws.receive(), timeout=10)
+                        if ack_msg.type != aiohttp.WSMsgType.TEXT:
+                            raise RuntimeError(f"Handshake bad type: {ack_msg.type}")
+                        ack_data = json.loads(ack_msg.data)
+                        if ack_data.get("type") != "HANDSHAKE_OK":
+                            raise RuntimeError(f"Handshake rejected: {ack_data}")
 
-                    if self.config is None:
-                        await self._send_event("AWAITING_CONFIG", {"reason": "no local config"})
+                        # Announce online
+                        await self._send_event("VM_ONLINE", {
+                            "version": "1.0",
+                            "capabilities": ["trade", "renko8", "hma"],
+                            "last_shutdown_time": self.state.get_meta("last_shutdown", 0),
+                        })
 
-                    # Drain any buffered events
-                    await self._drain_buffered()
+                        if self.config is None:
+                            await self._send_event("AWAITING_CONFIG", {"reason": "no local config"})
 
-                    # Incoming command loop
-                    async for msg in ws:
-                        try:
-                            m = json.loads(msg)
-                            await self._handle_mother_command(m)
-                        except Exception as e:
-                            self.log.error(f"Command handling error: {e}\n{traceback.format_exc()}")
+                        # Drain any buffered events
+                        await self._drain_buffered()
+
+                        # Command loop
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                try:
+                                    m = json.loads(msg.data)
+                                    await self._handle_mother_command(m)
+                                except Exception as e:
+                                    self.log.error(f"Command handling error: {e}\n{traceback.format_exc()}")
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
 
             except Exception as e:
                 self.mother_ws = None
@@ -759,7 +752,7 @@ class VMEngine:
 
         elif cmd == "RESUME_TRADING":
             self.halted_by_mother = False
-            self.halted_by_dd = False  # allow manual reset
+            self.halted_by_dd = False
             self.log.info(f"RESUMED by mother: {data.get('reason', '')}")
 
         elif cmd == "CLOSE_ALL_POSITIONS":
@@ -771,7 +764,8 @@ class VMEngine:
                         "status": "CLOSED", "exit_reason": "MANUAL_CLOSE",
                         "exit_ts": int(time.time()),
                     })
-                    self.strategy.mark_exited() if hasattr(self.strategy, "mark_exited") else None
+                    if hasattr(self.strategy, "mark_exited"):
+                        self.strategy.mark_exited()
                     await self._send_event("TRADE_CLOSE", {
                         "trade_id": pos["trade_id"], "exit_reason": "MANUAL_CLOSE",
                         "exit_time": int(time.time()),
@@ -783,12 +777,9 @@ class VMEngine:
                     })
 
         elif cmd == "SHUTDOWN":
-            self.log.info(f"Shutdown requested by mother")
+            self.log.info("Shutdown requested by mother")
             self.state.set_meta("last_shutdown", int(time.time()))
             self.running = False
-            # Outbound event queue — decouple strategy from mother comms
-            self._outbound_queue = asyncio.Queue(maxsize=10000)
-
 
         elif cmd == "GET_STATE":
             includes = data.get("include", [])
@@ -818,8 +809,8 @@ class VMEngine:
                     "mt5_connected": self.mt5_ok,
                     "position_count": 1 if self.state.open_position() else 0,
                     "today_trades": len(self.state.todays_trades()),
-                    "balance": bal,       # ← ADD
-                    "equity": eq,         # ← ADD
+                    "balance": bal,
+                    "equity": eq,
                 })
             except Exception:
                 pass
@@ -827,7 +818,6 @@ class VMEngine:
 
     # ---------- Main tick loop ----------
     async def main_loop(self):
-        # Wait for config if not present
         if self.config is None:
             self.log.info("Awaiting config from mother...")
             await self.pending_config_event.wait()
@@ -872,7 +862,6 @@ class VMEngine:
                     await asyncio.sleep(POLL_INTERVAL_MS / 1000)
                     continue
 
-                # Dedupe by ts + msec
                 if ts_int != last_tick_ts or tick.time_msc != last_msc:
                     new_bricks = self.renko.feed_tick(ts_int, price, float(tick.volume))
                     last_tick_ts = ts_int
@@ -924,17 +913,13 @@ async def main():
         asyncio.create_task(engine.mother_connection_loop()),
         asyncio.create_task(engine.heartbeat_loop()),
         asyncio.create_task(engine.main_loop()),
+        asyncio.create_task(engine._outbound_sender_loop()),
     ]
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
         log.critical(f"Fatal: {e}\n{traceback.format_exc()}")
-    tasks = [
-        asyncio.create_task(engine.mother_connection_loop()),
-        asyncio.create_task(engine.heartbeat_loop()),
-        asyncio.create_task(engine.main_loop()),
-        asyncio.create_task(engine._outbound_sender_loop()),  # ADD THIS
-    ]
+
 
 if __name__ == "__main__":
     try:
