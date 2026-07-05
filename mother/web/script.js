@@ -4,7 +4,7 @@
 const UNLOCK = {
   // SHA-256 hash of the actual password. GENERATE YOUR OWN.
   // In browser console: (async()=>{const h=await crypto.subtle.digest("SHA-256",new TextEncoder().encode("YOUR_PWD"));console.log(Array.from(new Uint8Array(h)).map(b=>b.toString(16).padStart(2,"0")).join(""))})()
-  correctHash: "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+  correctHash: "d6e1ba5ffc9cedb66266c42cc04a2f03eb794e11ac4e3e2f55e1f4f9779e3fc7",
   logoClicks: 0,
   themeClicks: 0,
   submitClicksEmpty: 0,
