@@ -494,15 +494,26 @@ img, svg { display: block; max-width: 100%; }
    NAV RAIL
    ============================================================ */
 #nav-rail {
-  background: var(--bg-1);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-3) var(--space-1);
-  gap: 2px;
-  overflow: hidden;
-  transition: width var(--dur-slow) var(--ease);
-  z-index: 15;
+    order: 3;
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100% !important;
+    height: calc(60px + env(safe-area-inset-bottom, 0px));
+    padding: 4px 0 calc(4px + env(safe-area-inset-bottom, 0px)) 0;
+    flex-direction: row !important;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    gap: 0;
+    justify-content: space-around;
+    align-items: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--bg-1);
+    z-index: 30;
+    -webkit-overflow-scrolling: touch;
+    flex-shrink: 0;
 }
 .nav-item {
   display: flex;
@@ -1767,7 +1778,7 @@ img, svg { display: block; max-width: 100%; }
 
   /* Toasts */
   #toast-container {
-    bottom: 76px;  /* above bottom nav */
+    bottom: calc(76px + env(safe-area-inset-bottom, 0px));
     right: 12px;
     left: 12px;
   }
@@ -1780,9 +1791,9 @@ img, svg { display: block; max-width: 100%; }
 
   /* Live chart */
   .live-container {
-    height: calc(100vh - var(--topbar-h) - 60px);
-    height: calc(100dvh - var(--topbar-h) - 60px);
-  }
+    height: calc(100vh - var(--topbar-h) - 60px - env(safe-area-inset-bottom, 0px));
+    height: calc(100dvh - var(--topbar-h) - 60px - env(safe-area-inset-bottom, 0px));
+  } 
   .live-toolbar {
     padding: 8px 12px;
     gap: 8px;
