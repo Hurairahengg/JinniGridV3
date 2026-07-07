@@ -454,9 +454,10 @@ class Mother:
     # ==============================================================
     async def start(self):
         self.log.info("=" * 60)
-        self.log.info("Mother V3 startup")
+        self.log.info("Mother V4 startup")
         self.log.info(f"Symbol: {self.symbol} brick={self.brick_size}")
         self.log.info(f"Session hours (CST): {STRATEGY_CFG['session_hours_cst']}")
+        self.log.info(f"Trading days (UTC weekday): {STRATEGY_CFG['trading_days_utc_weekday']}")
         self.log.info("=" * 60)
 
         self.dedup.start()

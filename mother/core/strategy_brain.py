@@ -167,33 +167,52 @@ class StrategyBrain:
     # SESSION GATE — simple UTC-6 offset (matches backtest)
     # ============================================================
     def _in_session(self, unix_ts):
-        dt = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
-        cst_hour = (dt.hour - 6) % 24
-        # Weekday adjustment for UTC-6 crossing midnight
-        # Simple check: if UTC hour < 6, we're in previous day CST
-        # For NY session (8-16 CST) this doesn't matter — always same UTC day
+        """
+        Simple UTC-6 offset (matches backtest exactly).
+        Backtest uses cst_hour = (utc_hour - 6) % 24 with NY_H = {8-16}.
+        """
+        from datetime import datetime, timezone
+        dt = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc)
+        utc_hour = dt.hour
+        cst_hour = (utc_hour - 6) % 24
         weekday = dt.weekday()
-        return (cst_hour in self.session_hours) and (weekday in self.trading_days)
 
+        in_hours = cst_hour in self.session_hours
+        in_days = weekday in self.trading_days
+
+        # ALWAYS log the decision for debugging
+        if self.log:
+            result = in_hours and in_days
+            self.log.info(
+                f"SESSION CHECK ts={unix_ts} utc={dt.isoformat()} "
+                f"utc_hr={utc_hour} cst_hr={cst_hour} wd={weekday} "
+                f"in_hrs={in_hours} in_days={in_days} RESULT={result}"
+            )
+
+        return in_hours and in_days
     # ============================================================
     # MAIN EVAL — called after brick append
     # ============================================================
     def on_new_brick(self, brick):
+        """
+        Called by mother after each new brick forms from OANDA ticks.
+        Runs the FIXED execution order.
+        """
         self.append_brick(brick)
 
-        # Belt-and-suspenders session check at brain level too
+        # CRITICAL: Session gate at the VERY TOP.
+        # Out-of-session: only allow SL/exit management for existing positions.
+        # NEVER open new positions.
         if not self._in_session(brick["time"]):
-            # If in position, still allow SL/exit logic (positions must close)
             if self.in_position:
                 self._eval_in_trade(brick)
-            # But NEVER open new positions out of session
+            # else: absolutely nothing
             return
 
         if self.in_position:
             self._eval_in_trade(brick)
         else:
             self._eval_for_entry(brick)
-
     # ============================================================
     # IN-TRADE EVALUATION (STEPS A-E)
     # ============================================================
@@ -291,7 +310,7 @@ class StrategyBrain:
     # ENTRY EVALUATION
     # ============================================================
     def _eval_for_entry(self, brick):
-        # FIRST THING: session gate (before ANY MA computation)
+        # DEFENSE IN DEPTH: session gate before ANY computation
         if not self._in_session(brick["time"]):
             return
 
@@ -300,6 +319,7 @@ class StrategyBrain:
                 FAST_MA_PERIOD + FAST_SLOPE_LB + CONF_STREAK) + 5
         if n < need:
             return
+
             
         if self.log:
             dt = datetime.fromtimestamp(brick["time"], tz=timezone.utc)
