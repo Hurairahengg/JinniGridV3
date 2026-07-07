@@ -425,6 +425,27 @@ function handleMessage(msg) {
     store.set({ vms });
     return;
   }
+  if (t === "validation_result") {
+    const vms = { ...store.state.vms };
+    const vid = msg.vm_id;
+    if (vms[vid]) {
+      const vm = { ...vms[vid] };
+      vm.trades = vm.trades.map(tr => tr.trade_id === msg.trade_id ? {
+        ...tr,
+        validation_status: msg.result.status,
+        validation_confidence: msg.result.confidence,
+        validation_details: msg.result.details,
+      } : tr);
+      vms[vid] = vm;
+      store.set({ vms });
+    }
+    const status = msg.result.status;
+    if (status === "MAJOR_MISMATCH") {
+      toast(`⚠️ ${msg.vm_id}: major mismatch on trade`, "error", 5000);
+    }
+    return;
+  }
+
   if (t === "vm_status_change") {
     const vms = { ...store.state.vms };
     if (vms[msg.vm_id]) {
@@ -1172,7 +1193,7 @@ function renderLogs() {
       <div class="page-header">
         <div>
           <div class="page-title">Logs</div>
-          <div class="page-subtitle">${filtered.length} of ${allEvents.length} events</div>
+          <div class="page-subtitle">${filtered.length} of ${allEvents.length} events (showing latest 200)</div>
         </div>
       </div>
       <div class="chip-row">
@@ -1194,7 +1215,7 @@ function renderLogs() {
       <div class="card">
         <div class="list-compact">
           ${filtered.length === 0 ? emptyState("No events match", "") :
-            filtered.slice(0, 1000).map(e => {
+            filtered.slice(0, 200).map(e => {
               const ts = e.ts ? new Date(e.ts * 1000).toISOString().replace("T", " ").slice(0, 19) : "—";
               const dataJson = e.data && Object.keys(e.data).length > 0 ? JSON.stringify(e.data, null, 2) : null;
               return `
@@ -1353,7 +1374,8 @@ function renderConfig() {
       else if (type === "number") val = e.target.value === "" ? null : Number(e.target.value);
       else val = e.target.value;
       setByPath(configDraft, path, val);
-      renderConfig();
+      // Update dirty state WITHOUT re-rendering the whole page
+      updateConfigDirtyStateInline();
     };
     el.addEventListener("input", handler);
     el.addEventListener("change", handler);
@@ -1378,6 +1400,43 @@ function renderConfigPanel(tabKey, diff) {
     <div class="config-panel-desc">${spec.desc}</div>
     ${spec.fields.map(f => renderConfigField(f, diff)).join("")}
   `;
+}
+
+function updateConfigDirtyStateInline() {
+  const diff = computeConfigDiff();
+  const dirty = Object.keys(diff).length > 0;
+
+  // Mark dirty inputs
+  document.querySelectorAll("[data-field-path]").forEach(el => {
+    const path = el.dataset.fieldPath;
+    if (path in diff) el.classList.add("dirty");
+    else el.classList.remove("dirty");
+  });
+
+  // Update header subtitle
+  const subtitle = document.querySelector(".page-header .page-subtitle");
+  if (subtitle) {
+    const vm = store.state.vms[store.state.selectedVm];
+    subtitle.textContent = `${vm.vm_id} · ${dirty ? Object.keys(diff).length + ' change(s)' : 'no changes'}`;
+  }
+
+  // Update button disabled state
+  const resetBtn = document.getElementById("cfg-reset");
+  const pushBtn = document.getElementById("cfg-push");
+  if (resetBtn) resetBtn.disabled = !dirty;
+  if (pushBtn) pushBtn.disabled = !dirty;
+
+  // Refresh diff panel WITHOUT full re-render
+  const existingDiff = document.querySelector(".config-diff-panel");
+  const editorEl = document.querySelector(".config-editor");
+  const pageEl = document.querySelector(".page");
+  if (existingDiff) existingDiff.remove();
+  if (dirty && pageEl && editorEl) {
+    const tmpDiv = document.createElement("div");
+    tmpDiv.innerHTML = renderDiffPanel(diff);
+    const newPanel = tmpDiv.firstElementChild;
+    if (newPanel) pageEl.insertBefore(newPanel, editorEl);
+  }
 }
 
 function renderConfigField(f, diff) {

@@ -1543,21 +1543,39 @@ img, svg { display: block; max-width: 100%; }
 }
 
 /* ============================================================
-   LOGS
+   LOGS PAGE — bulletproof
    ============================================================ */
-.log-row {
-  padding: var(--space-2) var(--space-4);
+.log-detail-row {
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   display: grid;
-  grid-template-columns: 140px 90px 30px 80px 1fr;
-  gap: var(--space-3);
+  grid-template-columns: 140px 90px 70px 80px 1fr;
+  gap: 12px;
   font-family: var(--font-mono);
   font-size: 11px;
   align-items: start;
-  transition: background var(--dur-fast) var(--ease);
+  transition: background 120ms ease;
+  cursor: pointer;
+  background: var(--bg-1);
 }
-.log-row:hover { background: var(--bg-2); }
-.log-ts { color: var(--text-muted); }
+
+.log-detail-row:hover {
+  background: var(--bg-2);
+}
+
+.log-detail-row.expanded {
+  background: var(--bg-2);
+}
+
+.log-detail-row.expanded .log-json {
+  display: block !important;
+}
+
+.log-ts {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
 .log-type {
   background: var(--bg-3);
   color: var(--accent);
@@ -1568,19 +1586,44 @@ img, svg { display: block; max-width: 100%; }
   letter-spacing: 0.5px;
   text-align: center;
 }
-.log-vm {
+
+.log-vm-tag {
   color: var(--purple);
   font-size: 10px;
+  padding: 2px 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  text-align: center;
 }
+
 .log-severity {
   font-weight: 700;
   font-size: 10px;
 }
+
 .log-severity.INFO { color: var(--text-dim); }
 .log-severity.WARNING { color: var(--yellow); }
-.log-severity.ERROR, .log-severity.CRITICAL { color: var(--red); }
-.log-msg { color: var(--text); word-break: break-word; }
+.log-severity.ERROR,
+.log-severity.CRITICAL { color: var(--red); }
 
+.log-msg {
+  color: var(--text);
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.log-json {
+  display: none;
+  grid-column: 1 / -1;
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--bg-3);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* ============================================================
    CONFIG JSON
    ============================================================ */
@@ -2166,4 +2209,46 @@ img, svg { display: block; max-width: 100%; }
   }
   #main { overflow: visible; }
   .card { break-inside: avoid; }
+}
+
+.page-header .btn,
+.page-header .btn.primary {
+  display: inline-flex !important;
+  visibility: visible !important;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 200ms ease;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+}
+
+.page-header .btn.primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.page-header .btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow);
+}
+
+.page-header .btn.primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+
+.page-header .btn:disabled,
+.page-header .btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
 }

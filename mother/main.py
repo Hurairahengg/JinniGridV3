@@ -1,5 +1,5 @@
 """
-mother/main.py — Mother orchestrator (V3).
+mother/main.py — Mother orchestrator (V4).
 
 Architecture:
   - Connects to own MT5 (OANDA) for canonical tick feed
@@ -7,8 +7,9 @@ Architecture:
   - Broadcasts signals to all VMs via WebSocket
   - Tracks positions per VM via 5s state polling from VMs
   - Rolling 200-brick memory buffer for instant chart render
+  - Background validator that replays trades on brain's brick history
   - Bulletproof error dedup — no more spam
-  - Simple UTC-6 session gate (matches backtest)
+  - Simple UTC session gate (matches backtest)
 """
 import asyncio
 import hashlib
@@ -33,6 +34,7 @@ from aiohttp import web
 from core.bars import RenkoBuilder
 from core.strategy_brain import StrategyBrain, SignalOpen, SignalModifySL, SignalClose
 from core.error_dedup import ErrorDedup
+from core.validator import Validator
 
 
 # ============================================================
@@ -97,7 +99,6 @@ class Telegram:
         self.log = logging.getLogger("telegram")
 
     async def send_raw(self, text):
-        """Async fire-and-forget."""
         if not self.enabled or not self._url:
             return
         try:
@@ -114,21 +115,16 @@ class Telegram:
             self.log.debug(f"tg send failed: {e}")
 
     async def dedup_dispatch(self, payload):
-        """Callback from ErrorDedup — actually sends."""
         level = payload.get("level", "INFO")
-        cat = payload.get("category", "")
-        msg = payload.get("message", "")
         source = payload.get("source", "?")
-        count = payload.get("count", 1)
-
+        msg = payload.get("message", "")
         emoji = "❌" if level == "ERROR" else "⚠️" if level == "WARNING" else "ℹ️"
-        prefix = f"<b>[{source}]</b>"
-        text = f"{emoji} {prefix} {msg[:800]}"
+        text = f"{emoji} <b>[{source}]</b> {msg[:800]}"
         await self.send_raw(text)
 
     async def startup(self):
         if self.opts.get("send_startup"):
-            await self.send_raw("🚀 <b>JinniGrid Mother V3 started</b>")
+            await self.send_raw("🚀 <b>JinniGrid Mother V4 started</b>")
 
     async def vm_online(self, vm_id):
         if self.opts.get("send_vm_online"):
@@ -196,7 +192,10 @@ class FleetDB:
         lots REAL,
         realized_pnl REAL,
         exit_reason TEXT,
-        mt5_ticket INTEGER
+        mt5_ticket INTEGER,
+        validation_status TEXT,
+        validation_confidence REAL,
+        mismatch_details TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_trades_vm ON trades(vm_id);
     CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(entry_time);
@@ -236,6 +235,18 @@ class FleetDB:
         self.conn.executescript(self.SCHEMA)
         self.conn.commit()
 
+        # Auto-migrate for older DBs
+        for col in [
+            "validation_status TEXT",
+            "validation_confidence REAL",
+            "mismatch_details TEXT",
+        ]:
+            try:
+                self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # already exists
+
     def upsert_vm(self, vm_id, updates):
         existing = self.conn.execute("SELECT id FROM vms WHERE id=?", (vm_id,)).fetchone()
         if existing:
@@ -274,6 +285,13 @@ class FleetDB:
               close_data["exit_reason"], close_data["realized_pnl"], trade_id))
         self.conn.commit()
 
+    def attach_validation(self, trade_id, status, confidence, details_dict):
+        self.conn.execute("""
+            UPDATE trades SET validation_status=?, validation_confidence=?, mismatch_details=?
+            WHERE id=?
+        """, (status, confidence, json.dumps(details_dict), trade_id))
+        self.conn.commit()
+
     def snapshot_equity(self, vm_id, balance, equity):
         self.conn.execute(
             "INSERT INTO equity_snapshots (vm_id, timestamp, balance, equity) VALUES (?, ?, ?, ?)",
@@ -291,11 +309,13 @@ class FleetDB:
     def get_trades_last(self, limit=1000):
         rows = self.conn.execute(
             "SELECT id, vm_id, signal_id, symbol, direction, entry_time, entry_price, exit_time, exit_price, "
-            "sl_price, lots, realized_pnl, exit_reason, mt5_ticket FROM trades ORDER BY entry_time DESC LIMIT ?",
-            (limit,)
+            "sl_price, lots, realized_pnl, exit_reason, mt5_ticket, "
+            "validation_status, validation_confidence, mismatch_details "
+            "FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,)
         ).fetchall()
         keys = ["trade_id", "vm_id", "signal_id", "symbol", "direction", "entry_ts", "entry_price",
-                "exit_ts", "exit_price", "sl_price", "lots", "realized_pnl", "exit_reason", "mt5_ticket"]
+                "exit_ts", "exit_price", "sl_price", "lots", "realized_pnl", "exit_reason", "mt5_ticket",
+                "validation_status", "validation_confidence", "mismatch_details"]
         return [dict(zip(keys, r)) for r in rows]
 
     def get_events_last(self, vm_id=None, limit=500):
@@ -392,9 +412,9 @@ class ConfigManager:
 # ============================================================
 class FleetState:
     def __init__(self):
-        self.vms = {}                    # vm_id -> vm state dict
-        self.recent_bricks = deque(maxlen=BRICK_BUFFER_SIZE)   # rolling brick buffer
-        self.recent_ma_data = deque(maxlen=BRICK_BUFFER_SIZE)  # {"main_ma": x, "fast_ma": y}
+        self.vms = {}
+        self.recent_bricks = deque(maxlen=BRICK_BUFFER_SIZE)
+        self.recent_ma_data = deque(maxlen=BRICK_BUFFER_SIZE)
         self.brain_state = {}
 
     def upsert_vm(self, vm_id, **patch):
@@ -407,7 +427,7 @@ class FleetState:
                 "equity": 0,
                 "peak_balance": 0,
                 "position_count": 0,
-                "open_positions": {},   # position_id -> position dict
+                "open_positions": {},
                 "config": None,
             }
         self.vms[vm_id].update(patch)
@@ -436,13 +456,13 @@ class Mother:
         )
         self.dedup.bind_sender(self.tg.dedup_dispatch)
 
-        # Strategy brain
         self.brain = None
         self.renko = None
         self.symbol = MT5_SRC_CFG["symbol"]
         self.brick_size = MT5_SRC_CFG["brick_size"]
 
-        # MT5
+        self.validator = None
+
         self.mt5_ok = False
         self.mt5_ready_event = asyncio.Event()
 
@@ -463,7 +483,6 @@ class Mother:
         self.dedup.start()
         await self.tg.startup()
 
-        # Pre-populate VM state from config files
         configs = self.cfg_mgr.list_all()
         for vm_id, cfg in configs.items():
             self.state.upsert_vm(
@@ -474,7 +493,6 @@ class Mother:
             )
         self.log.info(f"Pre-populated {len(configs)} VMs from configs")
 
-        # Initialize renko + brain
         self.renko = RenkoBuilder(
             brick_size=self.brick_size,
             price_decimals=MT5_SRC_CFG.get("price_decimals", 2),
@@ -489,6 +507,14 @@ class Mother:
             on_signal_close=self._on_signal_close,
             logger=self.log,
         )
+
+        # Validator uses brain's bars for replay
+        self.validator = Validator(
+            brain=self.brain,
+            on_validation_ready=self._on_validation_ready,
+            logger=self.log,
+        )
+        self.validator.start()
 
     # ==============================================================
     # MT5 TICK SOURCE
@@ -512,7 +538,7 @@ class Mother:
 
     async def warmup(self):
         days = MT5_SRC_CFG.get("warmup_days", 3)
-        now = int(time.time())
+        now = int(datetime.now(timezone.utc).timestamp())
         from_ts = now - days * 86400
         self.log.info(f"Warmup: pulling {days} days of ticks for {self.symbol}...")
         ticks = mt5.copy_ticks_range(
@@ -523,26 +549,21 @@ class Mother:
         )
         if ticks is None or len(ticks) == 0:
             self.log.warning("No warmup ticks!")
+            self.mt5_ready_event.set()
             return
 
         self.log.info(f"Feeding {len(ticks):,} warmup ticks...")
-        bars = []
-        # Detect broker offset from FIRST tick vs "now"
-        # (both should be near the same absolute time)
-        now_utc = int(datetime.now(timezone.utc).timestamp())
-        first_tick_time = int(ticks[0]["time"]) if len(ticks) > 0 else now_utc
-        # Approx offset: how many seconds is broker ahead of real UTC?
-        # The warmup fetched "3 days back" using our system time as anchor,
-        # but broker returns broker-time. The LAST tick of warmup should be
-        # very close to broker's "now".
-        last_tick_time = int(ticks[-1]["time"]) if len(ticks) > 0 else now_utc
-        broker_offset_sec = last_tick_time - now_utc
-        if abs(broker_offset_sec) < 300:  # within 5 min = broker uses UTC
+
+        # Detect broker time offset
+        last_tick_time = int(ticks[-1]["time"]) if len(ticks) > 0 else now
+        broker_offset_sec = last_tick_time - now
+        if abs(broker_offset_sec) < 300:
             broker_offset_sec = 0
         self.log.info(f"Warmup broker time offset: {broker_offset_sec}s ({broker_offset_sec/3600:.1f}h)")
 
+        bars = []
         for t in ticks:
-            ts_int = int(t["time"]) - broker_offset_sec   # normalize to real UTC
+            ts_int = int(t["time"]) - broker_offset_sec  # normalize to real UTC
             bid = float(t["bid"])
             ask = float(t["ask"])
             price = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else (bid or ask or float(t.get("last", 0)))
@@ -553,29 +574,19 @@ class Mother:
             for b in new_bricks:
                 bars.append(b)
 
-        # Load into brain (silent — no signals during warmup)
         self.brain.prepend_history(bars, abs_start_index=0)
-        # Push latest bricks to state buffer for dashboard
         for b in bars[-BRICK_BUFFER_SIZE:]:
             self.state.push_brick(b)
         self.log.info(f"Warmup done. {len(bars)} bars loaded, brain armed.")
 
-        # Reset renko timestamp tracker so live UTC timestamps (which will be much
-        # smaller than broker warmup ts values) don't get force-incremented from
-        # broker-future values. This lets live bricks emit with real UTC epoch times.
+        # Reset renko so live UTC timestamps aren't force-incremented from warmup
         self.renko._last_ts = 0
-
-        # Also seed brain's abs_start_index for continuity — warmup bars filled
-        # index 0..len(bars)-1, so next brick will be at index len(bars).
-        # (StrategyBrain already handles this via prepend_history's abs_start_index=0)
 
         self.mt5_ready_event.set()
 
     async def tick_loop(self):
-        """Main tick polling loop — feeds strategy brain."""
         await self.mt5_ready_event.wait()
         self.log.info("Entering live tick loop")
-        last_tick_ts = 0
         last_msc = 0
 
         while self.running:
@@ -585,6 +596,7 @@ class Mother:
                     await asyncio.sleep(POLL_INTERVAL_MS / 1000)
                     continue
 
+                # Use real UTC time — NEVER trust broker time for session decisions
                 ts_int = int(datetime.now(timezone.utc).timestamp())
                 bid = float(tick.bid)
                 ask = float(tick.ask)
@@ -596,21 +608,17 @@ class Mother:
                     await asyncio.sleep(POLL_INTERVAL_MS / 1000)
                     continue
 
-                if ts_int != last_tick_ts or tick.time_msc != last_msc:
+                if tick.time_msc != last_msc:
                     new_bricks = self.renko.feed_tick(ts_int, price, float(tick.volume))
-                    last_tick_ts = ts_int
                     last_msc = tick.time_msc
                     for brick in new_bricks:
-                        # Compute MAs for dashboard
                         closes = [b["close"] for b in self.brain.bars] + [brick["close"]]
                         main_ma = self.brain.main_hma.value(closes)
                         fast_ma = self.brain.fast_hma.value(closes)
                         self.state.push_brick(brick, main_ma, fast_ma)
 
-                        # Feed brain — this triggers signal callbacks synchronously
                         self.brain.on_new_brick(brick)
 
-                        # Broadcast to dashboard live chart
                         await self._broadcast_dashboard({
                             "type": "bar_new",
                             "brick": brick,
@@ -626,10 +634,9 @@ class Mother:
                 await asyncio.sleep(2)
 
     # ==============================================================
-    # SIGNAL HANDLERS (called by strategy brain)
+    # SIGNAL CALLBACKS
     # ==============================================================
     def _on_signal_open(self, sig: SignalOpen):
-        """Sync callback — enqueue broadcast."""
         asyncio.create_task(self._async_broadcast_open(sig))
 
     def _on_signal_modify_sl(self, sig: SignalModifySL):
@@ -644,11 +651,10 @@ class Mother:
             "type": "SIGNAL_OPEN",
             "signal_id": sig.signal_id,
             "direction": sig.direction,
-            # NO SYMBOL — each VM uses its own config's symbol
             "sl_distance_pts": sig.sl_distance_pts,
             "expires_at_ms": expires_at,
             "mother_entry_price": sig.entry_price,
-            "mother_symbol": self.symbol,  # for reference/debug only
+            "mother_symbol": self.symbol,
             "mother_ma_ctx": {
                 "main_ma": sig.main_ma_value,
                 "fast_ma": sig.fast_ma_value,
@@ -658,10 +664,7 @@ class Mother:
         }
         n = await self._broadcast_to_vms(payload)
         self.log.info(f"SIGNAL_OPEN {sig.signal_id} direction={sig.direction} broadcast to {n} VM(s)")
-        # Dashboard event
-        await self._broadcast_dashboard({
-            "type": "signal_open", "signal": payload,
-        })
+        await self._broadcast_dashboard({"type": "signal_open", "signal": payload})
 
     async def _async_broadcast_modify_sl(self, sig: SignalModifySL):
         payload = {
@@ -683,24 +686,58 @@ class Mother:
         self.log.info(f"SIGNAL_CLOSE {sig.signal_id} reason={sig.reason}")
 
     async def _broadcast_to_vms(self, payload):
-        """Broadcast to all ONLINE VMs. Returns count."""
         n = 0
         now = time.time()
         payload["timestamp_ms"] = int(now * 1000)
         payload["message_id"] = str(uuid.uuid4())
         text = json.dumps(payload)
-
         for vm_id, ws in list(self.vm_connections.items()):
             vm = self.state.vms.get(vm_id, {})
             last_seen = vm.get("last_seen", 0)
             if now - last_seen > VM_STALE_SEC:
-                continue  # skip stale/offline VMs
+                continue
             try:
                 await ws.send_str(text)
                 n += 1
             except Exception as e:
                 self.dedup.emit(vm_id, "broadcast_fail", str(e), "WARNING")
         return n
+
+    # ==============================================================
+    # VALIDATION CALLBACK
+    # ==============================================================
+    async def _on_validation_ready(self, trade, result):
+        try:
+            trade_id = trade["trade_id"]
+            vm_id = trade["vm_id"]
+            self.db.attach_validation(trade_id, result.status, result.confidence, result.details)
+            self.log.info(f"[{vm_id}] Validation: {result.status} conf={result.confidence:.1f}% "
+                          f"vm_pnl=${result.vm_pnl:.2f} expected=${result.expected_pnl:.2f}")
+            await self._broadcast_dashboard({
+                "type": "validation_result",
+                "vm_id": vm_id,
+                "trade_id": trade_id,
+                "result": {
+                    "status": result.status,
+                    "confidence": result.confidence,
+                    "vm_pnl": result.vm_pnl,
+                    "expected_pnl": result.expected_pnl,
+                    "pnl_diff_usd": result.pnl_diff_usd,
+                    "pnl_diff_pct": result.pnl_diff_pct,
+                    "entry_price_diff_pct": result.entry_price_diff_pct,
+                    "details": result.details,
+                }
+            })
+            if result.status == "MAJOR_MISMATCH":
+                await self.tg.send_raw(
+                    f"⚠️ <b>[{vm_id}] MAJOR MISMATCH</b>\n"
+                    f"Trade #{trade_id[:12]}\n"
+                    f"VM PnL: ${result.vm_pnl:.2f}\n"
+                    f"Expected: ${result.expected_pnl:.2f}\n"
+                    f"Diff: ${result.pnl_diff_usd:.2f} ({result.pnl_diff_pct:.1f}%)"
+                )
+        except Exception as e:
+            self.log.error(f"validation ready handler: {e}")
 
     # ==============================================================
     # VM WEBSOCKET
@@ -717,7 +754,6 @@ class Mother:
                 return ws
             if handshake.get("shared_secret") != SHARED_SECRET:
                 await ws.send_json({"type": "HANDSHAKE_REJECT", "reason": "invalid secret"})
-                self.log.warning(f"Rejected handshake: bad secret")
                 return ws
 
             vm_id = handshake["vm_id"]
@@ -727,7 +763,6 @@ class Mother:
             self.state.upsert_vm(vm_id, status="online", last_seen=int(time.time()))
             await self.tg.vm_online(vm_id)
 
-            # Push config
             cfg = self.cfg_mgr.load(vm_id)
             if cfg is not None:
                 await ws.send_json({
@@ -738,7 +773,6 @@ class Mother:
                 })
                 self.log.info(f"Pushed config to {vm_id}")
 
-            # Event loop
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
                     try:
@@ -748,7 +782,7 @@ class Mother:
                         self.log.error(f"VM msg error: {e}")
 
         except asyncio.TimeoutError:
-            self.log.warning(f"Handshake timeout")
+            self.log.warning("Handshake timeout")
         except Exception as e:
             self.log.error(f"VM WS error: {e}")
         finally:
@@ -817,26 +851,6 @@ class Mother:
 
         elif mt == "POSITION_CLOSED":
             pos_id = data.get("position_id")
-            vm = self.state.vms.get(vm_id, {})
-            positions = vm.get("open_positions", {})
-            if pos_id in positions:
-                del positions[pos_id]
-            self.state.upsert_vm(vm_id, open_positions=positions)
-
-            self.db.update_trade_close(pos_id, {
-                "exit_time": data.get("exit_time", int(time.time())),
-                "exit_price": data.get("exit_price", 0),
-                "exit_reason": data.get("exit_reason", "?"),
-                "realized_pnl": data.get("realized_pnl", 0),
-            })
-            await self.tg.trade_close(vm_id, data)
-            self.db.insert_event(vm_id, "POSITION_CLOSED", "INFO", data)
-            await self._broadcast_dashboard({
-                "type": "vm_event", "vm_id": vm_id, "event_type": "POSITION_CLOSED", "data": data,
-            })
-        
-        elif mt == "POSITION_CLOSED":
-            pos_id = data.get("position_id")
             signal_id = data.get("signal_id")
             vm = self.state.vms.get(vm_id, {})
             positions = vm.get("open_positions", {})
@@ -856,7 +870,31 @@ class Mother:
                 "type": "vm_event", "vm_id": vm_id, "event_type": "POSITION_CLOSED", "data": data,
             })
 
-            # RECONCILE: check if any VM still has this signal open
+            # ENQUEUE VALIDATION
+            if self.validator is not None:
+                row = self.db.conn.execute(
+                    "SELECT id, vm_id, signal_id, direction, entry_time, entry_price, "
+                    "exit_time, exit_price, lots, realized_pnl FROM trades WHERE id=?",
+                    (pos_id,)
+                ).fetchone()
+                if row:
+                    vm_cfg = self.state.vms.get(vm_id, {}).get("config", {})
+                    cost_per_lot = vm_cfg.get("cost_per_lot", 1.20)
+                    self.validator.enqueue({
+                        "vm_id": row[1],
+                        "trade_id": row[0],
+                        "signal_id": row[2],
+                        "direction": row[3],
+                        "entry_time": row[4],
+                        "entry_price": row[5],
+                        "exit_time": row[6],
+                        "exit_price": row[7],
+                        "lots": row[8],
+                        "realized_pnl": row[9],
+                        "cost_per_lot": cost_per_lot,
+                    })
+
+            # Reconcile brain if all VMs closed this signal
             if signal_id and signal_id == self.brain.current_signal_id:
                 any_still_open = False
                 for other_vm in self.state.vms.values():
@@ -866,10 +904,8 @@ class Mother:
                             break
                     if any_still_open:
                         break
-
                 if not any_still_open:
-                    self.log.info(f"All VMs closed signal {signal_id} — resetting brain state")
-                    # Force brain to think its position is closed
+                    self.log.info(f"All VMs closed signal {signal_id} — resetting brain")
                     self.brain.in_position = False
                     self.brain.trade_direction = 0
                     self.brain.entry_price = 0.0
@@ -878,14 +914,12 @@ class Mother:
                     self.brain.be_triggered = False
                     self.brain.fav_bricks_count = 0
                     self.brain.current_signal_id = None
-        
+
         elif mt == "SL_STATE":
-            # VM reporting actual SL state after modify attempt
             pos_id = data.get("position_id")
             actual_sl = data.get("actual_sl")
             reason = data.get("reason", "?")
             self.log.info(f"[{vm_id}] SL_STATE: pos={pos_id} actual={actual_sl} ({reason})")
-            # Store per-VM SL divergence for dashboard visibility
             vm = self.state.vms.get(vm_id, {})
             positions = vm.get("open_positions", {})
             if pos_id in positions:
@@ -897,7 +931,7 @@ class Mother:
         elif mt == "VM_ERROR":
             code = data.get("error_code", "?")
             emsg = data.get("error_message", "")[:400]
-            self.dedup.emit(vm_id, code, emsg, "ERROR")
+            self.dedup.emit(vm_id, str(code), emsg, "ERROR")
             self.db.insert_event(vm_id, "VM_ERROR", "ERROR", data)
 
         elif mt == "VM_ONLINE":
@@ -1028,12 +1062,12 @@ class Mother:
                 merged[vm_id] = dict(state_data)
                 merged[vm_id]["config"] = {}
 
-        # Attach trades/events/equity per VM
+        # Only send limited event count for perf
         for vm_id, vm in merged.items():
-            trades = self.db.get_trades_last(1000)
+            trades = self.db.get_trades_last(500)
             vm["trades"] = [t for t in trades if t.get("vm_id") == vm_id]
-            vm["events"] = self.db.get_events_last(vm_id, 500)
-            vm["equity_history"] = self.db.get_equity_history(vm_id, 1000)
+            vm["events"] = self.db.get_events_last(vm_id, 200)  # reduced from 500 to fix slow logs
+            vm["equity_history"] = self.db.get_equity_history(vm_id, 500)
 
         payload = {
             "type": "initial_state",
@@ -1048,7 +1082,7 @@ class Mother:
         self.log.info(f"Sent initial state with {len(merged)} VMs, {len(self.state.recent_bricks)} bricks")
 
     # ==============================================================
-    # PERIODIC TASKS
+    # PERIODIC
     # ==============================================================
     async def stale_monitor(self):
         while self.running:
@@ -1070,7 +1104,6 @@ class Mother:
                         await self._broadcast_dashboard({
                             "type": "vm_status_change", "vm_id": vm_id, "status": new_status,
                         })
-                        self.log.warning(f"VM {vm_id} → {new_status} (age {age}s)")
             except Exception as e:
                 self.log.error(f"stale_monitor: {e}")
             await asyncio.sleep(15)
@@ -1087,7 +1120,6 @@ class Mother:
     # RUN
     # ==============================================================
     async def run(self):
-        # Dashboard app
         app = web.Application()
         app.router.add_get("/", self.handle_index)
         app.router.add_get("/health", self.handle_health)
@@ -1099,7 +1131,6 @@ class Mother:
         await dashboard_site.start()
         self.log.info(f"Dashboard on :{DASHBOARD_PORT}")
 
-        # Fleet app
         fleet_app = web.Application()
         fleet_app.router.add_get("/fleet", self.handle_vm_ws)
         fleet_runner = web.AppRunner(fleet_app)
@@ -1110,16 +1141,14 @@ class Mother:
 
         await self.start()
 
-        # MT5 setup (blocking briefly)
         try:
             self.mt5_connect()
         except Exception as e:
-            self.log.critical(f"Mother MT5 failed to connect: {e}")
+            self.log.critical(f"Mother MT5 failed: {e}")
             self.dedup.emit("mother", "mt5_init_fail", str(e), "ERROR")
             self.running = False
             return
 
-        # Warmup + live tick loop
         await self.warmup()
 
         tasks = [
@@ -1133,6 +1162,8 @@ class Mother:
         finally:
             self.log.info("Mother shutting down")
             self.dedup.stop()
+            if self.validator:
+                self.validator.stop()
             try:
                 mt5.shutdown()
             except Exception:
@@ -1146,7 +1177,7 @@ async def main_async():
     setup_logging()
     log = logging.getLogger("main")
     log.info("=" * 60)
-    log.info("JinniGrid Mother V3")
+    log.info("JinniGrid Mother V4")
     log.info("=" * 60)
 
     mother = Mother()
