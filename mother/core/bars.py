@@ -1,16 +1,12 @@
 """
 mother/core/bars.py — Renko brick engine.
 
-IDENTICAL logic to vm/strategy.py's RenkoBuilder. This is duplicated on
-purpose so mother and VM are independently deployable. Any drift here
-breaks validation. If you edit one, edit both — or extract to a shared
-package later.
+Feed ticks one at a time. Returns list of newly-completed bricks per call.
+Bit-for-bit compatible with backtest KokoCandleStreamer.
 """
 
 
 class RenkoBuilder:
-    """Feed ticks one at a time. Returns newly-completed bricks per call."""
-
     def __init__(self, brick_size, price_decimals=2, rev_bricks=2.0, clean_mode=True):
         self.rs = float(brick_size)
         self.pd = int(price_decimals)

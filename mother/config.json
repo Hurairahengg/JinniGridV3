@@ -3,11 +3,26 @@
   "fleet_port": 8765,
   "shared_secret": "jinni_grid_secret2347890",
 
-  "validator": {
-    "enabled": true,
-    "warmup_days": 3,
-    "min_warmup_bars": 500,
-    "rolling_window": 1000
+  "mt5_source": {
+    "path": null,
+    "timeout_ms": 60000,
+    "symbol": "US100.cash",
+    "brick_size": 8.0,
+    "price_decimals": 2,
+    "warmup_days": 3
+  },
+
+  "strategy": {
+    "session_hours_cst": [8, 9, 10, 11, 12, 13, 14, 15, 16],
+    "trading_days_utc_weekday": [0, 1, 2, 3, 4]
+  },
+
+  "signal": {
+    "expiration_ms": 5000,
+    "position_poll_interval_ms": 5000,
+    "heartbeat_interval_ms": 5000,
+    "vm_stale_after_sec": 30,
+    "vm_offline_after_sec": 120
   },
 
   "telegram": {
@@ -18,14 +33,15 @@
     "send_vm_online": true,
     "send_vm_offline": true,
     "send_every_trade": true,
-    "send_validation_mismatches": true,
     "send_errors": true,
-    "send_daily_summary": true
+    "error_cooldown_sec": 300,
+    "error_max_burst": 3
   },
 
   "storage": {
     "db_path": "state/fleet.db",
-    "config_history_dir": "state/config_history"
+    "config_history_dir": "state/config_history",
+    "brick_buffer_size": 200
   },
 
   "logging": {
