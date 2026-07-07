@@ -1,4 +1,4 @@
-# JinniGrid V4
+# JinniGrid V3
 
 Distributed MT5 trading fleet with a **mother-as-brain** architecture.
 

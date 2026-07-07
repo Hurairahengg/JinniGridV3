@@ -81,7 +81,7 @@ def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
         "tp": 0.0,
         "deviation": DEVIATION,
         "magic": magic,
-        "comment": "JinniGrid V4",
+        "comment": "JinniGrid V3",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -191,7 +191,7 @@ def close_position(symbol, ticket):
         "price": exit_price,
         "deviation": DEVIATION,
         "magic": MAGIC_NUMBER,
-        "comment": "JinniGrid V4 close",
+        "comment": "JinniGrid V3 close",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }

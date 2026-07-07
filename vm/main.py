@@ -1,5 +1,5 @@
 """
-vm/main.py — VM: dumb execution arm (V4).
+vm/main.py — VM: dumb execution arm (V3).
 
 Responsibilities:
   - Connect to mother via WebSocket
@@ -734,7 +734,7 @@ async def main():
 
     setup_logging(vm_id)
     log = logging.getLogger("main")
-    log.info(f"VM {vm_id} V4 starting. mother={mother_host}:{mother_port}")
+    log.info(f"VM {vm_id} V3 starting. mother={mother_host}:{mother_port}")
 
     engine = VMEngine(vm_id, mother_host, mother_port, shared_secret)
     engine.load_local_config()

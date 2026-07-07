@@ -6,7 +6,7 @@
   "mt5_source": {
     "path": null,
     "timeout_ms": 60000,
-    "symbol": "US100.cash",
+    "symbol": "US100",
     "brick_size": 8.0,
     "price_decimals": 2,
     "warmup_days": 3

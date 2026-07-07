@@ -1,5 +1,5 @@
 """
-mother/main.py — Mother orchestrator (V4).
+mother/main.py — Mother orchestrator (V3).
 
 Architecture:
   - Connects to own MT5 (OANDA) for canonical tick feed
@@ -128,7 +128,7 @@ class Telegram:
 
     async def startup(self):
         if self.opts.get("send_startup"):
-            await self.send_raw("🚀 <b>JinniGrid Mother V4 started</b>")
+            await self.send_raw("🚀 <b>JinniGrid Mother V3 started</b>")
 
     async def vm_online(self, vm_id):
         if self.opts.get("send_vm_online"):
@@ -454,7 +454,7 @@ class Mother:
     # ==============================================================
     async def start(self):
         self.log.info("=" * 60)
-        self.log.info("Mother V4 startup")
+        self.log.info("Mother V3 startup")
         self.log.info(f"Symbol: {self.symbol} brick={self.brick_size}")
         self.log.info(f"Session hours (CST): {STRATEGY_CFG['session_hours_cst']}")
         self.log.info("=" * 60)
@@ -1061,7 +1061,7 @@ async def main_async():
     setup_logging()
     log = logging.getLogger("main")
     log.info("=" * 60)
-    log.info("JinniGrid Mother V4")
+    log.info("JinniGrid Mother V3")
     log.info("=" * 60)
 
     mother = Mother()
