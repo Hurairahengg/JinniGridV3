@@ -808,6 +808,65 @@ class Mother:
             await self._broadcast_dashboard({
                 "type": "vm_event", "vm_id": vm_id, "event_type": "POSITION_CLOSED", "data": data,
             })
+        
+        elif mt == "POSITION_CLOSED":
+            pos_id = data.get("position_id")
+            signal_id = data.get("signal_id")
+            vm = self.state.vms.get(vm_id, {})
+            positions = vm.get("open_positions", {})
+            if pos_id in positions:
+                del positions[pos_id]
+            self.state.upsert_vm(vm_id, open_positions=positions)
+
+            self.db.update_trade_close(pos_id, {
+                "exit_time": data.get("exit_time", int(time.time())),
+                "exit_price": data.get("exit_price", 0),
+                "exit_reason": data.get("exit_reason", "?"),
+                "realized_pnl": data.get("realized_pnl", 0),
+            })
+            await self.tg.trade_close(vm_id, data)
+            self.db.insert_event(vm_id, "POSITION_CLOSED", "INFO", data)
+            await self._broadcast_dashboard({
+                "type": "vm_event", "vm_id": vm_id, "event_type": "POSITION_CLOSED", "data": data,
+            })
+
+            # RECONCILE: check if any VM still has this signal open
+            if signal_id and signal_id == self.brain.current_signal_id:
+                any_still_open = False
+                for other_vm in self.state.vms.values():
+                    for p in (other_vm.get("open_positions") or {}).values():
+                        if p.get("signal_id") == signal_id:
+                            any_still_open = True
+                            break
+                    if any_still_open:
+                        break
+
+                if not any_still_open:
+                    self.log.info(f"All VMs closed signal {signal_id} — resetting brain state")
+                    # Force brain to think its position is closed
+                    self.brain.in_position = False
+                    self.brain.trade_direction = 0
+                    self.brain.entry_price = 0.0
+                    self.brain.entry_brick_index_abs = -1
+                    self.brain.current_sl_price = 0.0
+                    self.brain.be_triggered = False
+                    self.brain.fav_bricks_count = 0
+                    self.brain.current_signal_id = None
+        
+        elif mt == "SL_STATE":
+            # VM reporting actual SL state after modify attempt
+            pos_id = data.get("position_id")
+            actual_sl = data.get("actual_sl")
+            reason = data.get("reason", "?")
+            self.log.info(f"[{vm_id}] SL_STATE: pos={pos_id} actual={actual_sl} ({reason})")
+            # Store per-VM SL divergence for dashboard visibility
+            vm = self.state.vms.get(vm_id, {})
+            positions = vm.get("open_positions", {})
+            if pos_id in positions:
+                positions[pos_id]["actual_sl_reported"] = actual_sl
+                positions[pos_id]["sl_divergence_reason"] = reason
+                self.state.upsert_vm(vm_id, open_positions=positions)
+            self.db.insert_event(vm_id, "SL_STATE", "WARNING", data)
 
         elif mt == "VM_ERROR":
             code = data.get("error_code", "?")

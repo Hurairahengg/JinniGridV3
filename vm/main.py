@@ -416,10 +416,25 @@ class VMEngine:
             self.log.warning(f"modify_sl failed: {result}")
             await self.send_error("MODIFY_SL_FAILED", result.get("error_message", "?"),
                                     {"signal_id": signal_id})
+            # Report actual SL state back to mother so it can reconcile
+            await self.send_msg("SL_STATE", {
+                "position_id": target["position_id"],
+                "signal_id": signal_id,
+                "requested_sl": new_sl_price,
+                "actual_sl": target["current_sl_price"],
+                "reason": result.get("error_message", "modify_failed"),
+            })
             return
 
         if result.get("unchanged"):
-            self.log.debug(f"modify_sl no-op (new SL not more favorable)")
+            self.log.debug(f"modify_sl no-op (not more favorable)")
+            await self.send_msg("SL_STATE", {
+                "position_id": target["position_id"],
+                "signal_id": signal_id,
+                "requested_sl": new_sl_price,
+                "actual_sl": target["current_sl_price"],
+                "reason": "not_more_favorable",
+            })
             return
 
         self.state.upsert_position({
