@@ -619,10 +619,11 @@ class Mother:
             "type": "SIGNAL_OPEN",
             "signal_id": sig.signal_id,
             "direction": sig.direction,
-            "symbol": self.symbol,
+            # NO SYMBOL — each VM uses its own config's symbol
             "sl_distance_pts": sig.sl_distance_pts,
             "expires_at_ms": expires_at,
             "mother_entry_price": sig.entry_price,
+            "mother_symbol": self.symbol,  # for reference/debug only
             "mother_ma_ctx": {
                 "main_ma": sig.main_ma_value,
                 "fast_ma": sig.fast_ma_value,

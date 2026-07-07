@@ -179,11 +179,15 @@ class StrategyBrain:
     # MAIN EVAL — called after brick append
     # ============================================================
     def on_new_brick(self, brick):
-        """
-        Called by mother after each new brick forms from OANDA ticks.
-        Runs the FIXED execution order.
-        """
         self.append_brick(brick)
+
+        # Belt-and-suspenders session check at brain level too
+        if not self._in_session(brick["time"]):
+            # If in position, still allow SL/exit logic (positions must close)
+            if self.in_position:
+                self._eval_in_trade(brick)
+            # But NEVER open new positions out of session
+            return
 
         if self.in_position:
             self._eval_in_trade(brick)
@@ -287,12 +291,21 @@ class StrategyBrain:
     # ENTRY EVALUATION
     # ============================================================
     def _eval_for_entry(self, brick):
-        n = len(self.bars)
-        need = max(MAIN_MA_PERIOD + MAIN_SLOPE_LB + CONF_STREAK,
-                   FAST_MA_PERIOD + FAST_SLOPE_LB + CONF_STREAK) + 5
-        if n < need:
+        # FIRST THING: session gate (before ANY MA computation)
+        if not self._in_session(brick["time"]):
             return
 
+        n = len(self.bars)
+        need = max(MAIN_MA_PERIOD + MAIN_SLOPE_LB + CONF_STREAK,
+                FAST_MA_PERIOD + FAST_SLOPE_LB + CONF_STREAK) + 5
+        if n < need:
+            return
+            
+        if self.log:
+            dt = datetime.fromtimestamp(brick["time"], tz=timezone.utc)
+            cst_hour = (dt.hour - 6) % 24
+            self.log.debug(f"Session OK: brick={brick['time']} utc_hr={dt.hour} cst_hr={cst_hour} wd={dt.weekday()}")
+            
         closes = [b["close"] for b in self.bars]
         m_v = self.main_hma.value(closes)
         f_v = self.fast_hma.value(closes)
@@ -306,10 +319,6 @@ class StrategyBrain:
             self.long_armed = True
         if not self.short_armed and cur_close > m_v:
             self.short_armed = True
-
-        # Session gate
-        if not self._in_session(brick["time"]):
-            return
 
         # Confirmation streak (needs main_hma and fast_hma values for last N closes)
         long_ok = False

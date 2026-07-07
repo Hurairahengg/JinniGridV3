@@ -503,7 +503,7 @@ function renderOverview() {
     <div class="page">
       <div class="page-header">
         <div>
-          <div class="page-title">Overview</div>
+          <div class="page-title">Dashboard</div>
           <div class="page-subtitle">Overall fleet performance</div>
         </div>
       </div>
@@ -1481,7 +1481,7 @@ function closeDetail() {
    COMMAND PALETTE
    ============================================================ */
 const cmdkCommands = [
-  { label: "Go to Overview", route: "overview", hint: "1" },
+  { label: "Go to Dashboard", route: "overview", hint: "1" },
   { label: "Go to Live Chart", route: "live", hint: "2" },
   { label: "Go to Trades", route: "trades", hint: "3" },
   { label: "Go to Stats", route: "stats", hint: "4" },

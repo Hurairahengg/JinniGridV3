@@ -316,9 +316,11 @@ class VMEngine:
             })
             return
 
+        
         direction = sig["direction"]
         sl_distance = sig["sl_distance_pts"]
-        symbol = sig.get("symbol", self.symbol)
+        symbol = self.symbol   # ← ALWAYS use VM's own config symbol
+
 
         # Compute lots
         risk_mode = self.config["risk"].get("risk_mode", "starting_balance")
