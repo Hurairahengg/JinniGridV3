@@ -183,7 +183,7 @@ class StrategyBrain:
         # ALWAYS log the decision for debugging
         if self.log:
             result = in_hours and in_days
-            self.log.info(
+            self.log.debug(
                 f"SESSION CHECK ts={unix_ts} utc={dt.isoformat()} "
                 f"utc_hr={utc_hour} cst_hr={cst_hour} wd={weekday} "
                 f"in_hrs={in_hours} in_days={in_days} RESULT={result}"

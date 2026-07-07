@@ -1511,50 +1511,60 @@ img, svg { display: block; max-width: 100%; }
   .detail-panel { width: 340px; }
   .search-box { max-width: 240px; }
 }
+/* ============================================================
+   RESPONSIVE — TABLET (901-1200px)
+   ============================================================ */
+@media (max-width: 1200px) {
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  #topbar-stats { gap: var(--space-3); }
+  .tb-stat-value { font-size: 12px; }
+}
+
+@media (max-width: 900px) {
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .detail-panel { width: 340px; }
+  .search-box { max-width: 240px; }
+}
 
 /* ============================================================
-   RESPONSIVE — MOBILE (fully rewritten)
+   RESPONSIVE — MOBILE (≤768px only)
    ============================================================ */
 @media (max-width: 768px) {
-  :root {
-    --topbar-h: 52px;
-    --nav-w: 100%;
-  }
-
   html, body {
     overflow-y: auto;
     overflow-x: hidden;
   }
 
-  /* App becomes vertical stack instead of grid */
   #app {
     display: flex !important;
-    flex-direction: column;
+    flex-direction: column !important;
     height: 100vh;
-    height: 100dvh;  /* dynamic viewport for iOS */
-    grid-template-columns: none !important;
-    grid-template-rows: none !important;
+    height: 100dvh;
   }
-  #app.nav-expanded { grid-template-columns: none !important; }
+  #app.nav-expanded {
+    grid-template-columns: none !important;
+  }
 
-  /* Top bar becomes compact */
   #topbar {
     position: sticky;
     top: 0;
     z-index: 30;
     padding: 0 12px;
     gap: 8px;
-    min-height: var(--topbar-h);
-    height: var(--topbar-h);
+    min-height: 52px;
+    height: 52px;
     flex-shrink: 0;
     background: var(--bg-1);
     border-bottom: 1px solid var(--border);
+    display: flex;
   }
 
-  /* Hide the sidebar-toggle button on mobile — replaced with bottom nav */
-  .nav-toggle { display: none !important; }
+  .nav-toggle {
+    display: none !important;
+  }
 
-  /* Brand: keep icon, keep short text */
   .brand {
     flex-shrink: 0;
     padding: 0;
@@ -1570,10 +1580,10 @@ img, svg { display: block; max-width: 100%; }
     height: 18px;
   }
 
-  /* Hide search on mobile — use cmdk via bottom nav */
-  .search-box { display: none; }
+  .search-box {
+    display: none !important;
+  }
 
-  /* Topbar stats — show only balance + PnL, super compact */
   #topbar-stats {
     gap: 6px;
     margin-left: auto;
@@ -1583,26 +1593,34 @@ img, svg { display: block; max-width: 100%; }
   .tb-stat {
     flex-shrink: 0;
   }
-  .tb-stat:nth-child(n+3) { display: none; }  /* hide positions + VMs */
-  .tb-stat-value { font-size: 11px; }
-  .tb-stat-label { font-size: 8px; letter-spacing: 0.5px; }
+  .tb-stat:nth-child(n+3) {
+    display: none;
+  }
+  .tb-stat-value {
+    font-size: 11px;
+  }
+  .tb-stat-label {
+    font-size: 8px;
+    letter-spacing: 0.5px;
+  }
 
-  /* Status badge collapses to just a dot */
   .status-badge {
     padding: 4px 6px;
     font-size: 10px;
   }
-  .status-badge span { display: none; }
-  .status-badge::before { margin: 0; }
+  .status-badge span {
+    display: none;
+  }
 
-  /* Theme button smaller */
   .icon-btn {
     width: 32px;
     height: 32px;
   }
-  .icon-btn svg { width: 16px; height: 16px; }
+  .icon-btn svg {
+    width: 16px;
+    height: 16px;
+  }
 
-  /* Nav rail moves to BOTTOM as tab bar */
   #nav-rail {
     order: 3;
     position: sticky;
@@ -1610,14 +1628,14 @@ img, svg { display: block; max-width: 100%; }
     left: 0;
     right: 0;
     width: 100% !important;
-    height: 60px;
+    height: calc(60px + env(safe-area-inset-bottom, 0px));
+    padding: 4px 0 calc(4px + env(safe-area-inset-bottom, 0px)) 0;
     flex-direction: row !important;
     border-right: none;
     border-top: 1px solid var(--border);
-    padding: 4px 0;
     gap: 0;
     justify-content: space-around;
-    align-items: center;
+    align-items: flex-start;
     overflow-x: auto;
     overflow-y: hidden;
     background: var(--bg-1);
@@ -1658,9 +1676,10 @@ img, svg { display: block; max-width: 100%; }
     letter-spacing: 0.3px;
     font-weight: 500;
   }
-  .nav-tip { display: none !important; }
+  .nav-tip {
+    display: none !important;
+  }
 
-  /* Main content area */
   #main {
     order: 2;
     flex: 1;
@@ -1674,7 +1693,6 @@ img, svg { display: block; max-width: 100%; }
     padding: 12px;
     max-width: 100%;
   }
-
   .page-header {
     flex-direction: column;
     align-items: flex-start;
@@ -1684,7 +1702,6 @@ img, svg { display: block; max-width: 100%; }
   .page-title { font-size: 18px; }
   .page-subtitle { font-size: 11px; }
 
-  /* KPI cards: 2 cols */
   .kpi-grid {
     grid-template-columns: 1fr 1fr;
     gap: 8px;
@@ -1695,11 +1712,13 @@ img, svg { display: block; max-width: 100%; }
     border-radius: 10px;
   }
   .kpi-label { font-size: 9px; }
-  .kpi-value { font-size: 20px; margin-bottom: 4px; }
+  .kpi-value {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
   .kpi-sub { font-size: 10px; }
   .kpi-sparkline { display: none; }
 
-  /* Cards */
   .card {
     border-radius: 10px;
     margin-bottom: 12px;
@@ -1714,7 +1733,6 @@ img, svg { display: block; max-width: 100%; }
   .card-subtitle { font-size: 10px; }
   .card-body { padding: 12px; }
 
-  /* Chip rows scroll horizontally */
   .chip-row {
     flex-wrap: nowrap;
     overflow-x: auto;
@@ -1723,42 +1741,48 @@ img, svg { display: block; max-width: 100%; }
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  .chip-row::-webkit-scrollbar { display: none; }
+  .chip-row::-webkit-scrollbar {
+    display: none;
+  }
   .chip {
     flex-shrink: 0;
     padding: 4px 10px;
     font-size: 10px;
   }
 
-  /* Trade rows — compact */
   .trade-row {
     grid-template-columns: 40px 24px 22px 1fr 80px;
     gap: 6px;
     padding: 10px 12px;
     font-size: 10px;
   }
-  .trade-row .trade-price { display: none; }
+  .trade-row .trade-price {
+    display: none;
+  }
   .trade-id { font-size: 9px; }
   .trade-time { font-size: 9px; }
   .trade-pnl { font-size: 11px; }
 
-  /* Log rows */
-  .log-row, .log-detail-row {
+  .log-row,
+  .log-detail-row {
     grid-template-columns: 90px 60px 1fr;
     gap: 6px;
     padding: 8px 12px;
     font-size: 10px;
   }
   .log-detail-row .log-vm-tag,
-  .log-detail-row .log-severity { display: none; }
+  .log-detail-row .log-severity {
+    display: none;
+  }
   .log-ts { font-size: 9px; }
 
-  /* Node cards fleet: 1 col */
-  .node-grid { grid-template-columns: 1fr; gap: 10px; }
+  .node-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
   .node-card { padding: 14px; }
   .node-card-balance { font-size: 22px; }
 
-  /* Detail panel goes full screen */
   .detail-panel {
     width: 100%;
     top: 0;
@@ -1770,13 +1794,14 @@ img, svg { display: block; max-width: 100%; }
   .detail-body { padding: 12px; }
   .detail-title { font-size: 12px; }
 
-  /* Command palette */
   .cmdk { padding-top: 40px; }
-  .cmdk-box { width: 95%; max-width: none; }
+  .cmdk-box {
+    width: 95%;
+    max-width: none;
+  }
   .cmdk-input-wrap { padding: 12px; }
   .cmdk-input { font-size: 14px; }
 
-  /* Toasts */
   #toast-container {
     bottom: calc(76px + env(safe-area-inset-bottom, 0px));
     right: 12px;
@@ -1789,31 +1814,34 @@ img, svg { display: block; max-width: 100%; }
     font-size: 12px;
   }
 
-  /* Live chart */
   .live-container {
-    height: calc(100vh - var(--topbar-h) - 60px - env(safe-area-inset-bottom, 0px));
-    height: calc(100dvh - var(--topbar-h) - 60px - env(safe-area-inset-bottom, 0px));
-  } 
+    height: calc(100vh - 52px - 60px - env(safe-area-inset-bottom, 0px));
+    height: calc(100dvh - 52px - 60px - env(safe-area-inset-bottom, 0px));
+  }
   .live-toolbar {
     padding: 8px 12px;
     gap: 8px;
     flex-wrap: wrap;
   }
   .live-toolbar .card-title { font-size: 12px; }
-  .ma-toggle { padding: 4px 8px; font-size: 10px; }
-  .session-badge { padding: 4px 8px; font-size: 10px; }
+  .ma-toggle {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
+  .session-badge {
+    padding: 4px 8px;
+    font-size: 10px;
+  }
 
-  /* Theme menu goes full width */
   .theme-menu {
     position: fixed;
-    top: var(--topbar-h);
+    top: 52px;
     left: 12px;
     right: 12px;
     min-width: auto;
     max-width: none;
   }
 
-  /* Config editor */
   .config-editor {
     grid-template-columns: 1fr;
     gap: 12px;
@@ -1826,7 +1854,9 @@ img, svg { display: block; max-width: 100%; }
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
   }
-  .config-tabs::-webkit-scrollbar { display: none; }
+  .config-tabs::-webkit-scrollbar {
+    display: none;
+  }
   .config-tab {
     flex-shrink: 0;
     padding: 8px 12px;
@@ -1838,9 +1868,12 @@ img, svg { display: block; max-width: 100%; }
     gap: 6px;
     padding: 10px 0;
   }
-  .config-field-input, .config-select { font-size: 12px; padding: 8px 10px; }
+  .config-field-input,
+  .config-select {
+    font-size: 12px;
+    padding: 8px 10px;
+  }
 
-  /* Unlock modal */
   .unlock-modal-box {
     min-width: 0;
     width: 90%;
@@ -1854,7 +1887,10 @@ img, svg { display: block; max-width: 100%; }
   .kpi-grid { grid-template-columns: 1fr; }
   .brand-name { display: none !important; }
   #topbar-stats .tb-stat:nth-child(n+2) { display: none; }
-  .nav-item { min-width: 42px; padding: 4px 4px; }
+  .nav-item {
+    min-width: 42px;
+    padding: 4px 4px;
+  }
   .nav-label { font-size: 8px; }
   .page-title { font-size: 16px; }
 }
@@ -1863,7 +1899,13 @@ img, svg { display: block; max-width: 100%; }
    PRINT
    ============================================================ */
 @media print {
-  #nav-rail, #topbar, .detail-panel, .cmdk, #toast-container { display: none !important; }
+  #nav-rail,
+  #topbar,
+  .detail-panel,
+  .cmdk,
+  #toast-container {
+    display: none !important;
+  }
   #main { overflow: visible; }
   .card { break-inside: avoid; }
 }
