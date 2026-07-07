@@ -1496,6 +1496,66 @@ img, svg { display: block; max-width: 100%; }
 .status-pill.stale, .status-pill.offline { background: var(--red-dim); color: var(--red); }
 
 /* ============================================================
+   DESKTOP GUARD — ensure grid layout wins above 768px
+   ============================================================ */
+@media (min-width: 769px) {
+  #app {
+    display: grid !important;
+    grid-template-rows: var(--topbar-h) 1fr !important;
+    grid-template-columns: var(--nav-w) 1fr !important;
+    flex-direction: unset !important;
+  }
+  #app.nav-expanded {
+    grid-template-columns: var(--nav-w-ex) 1fr !important;
+  }
+
+  #topbar {
+    grid-column: 1 / -1 !important;
+    display: flex !important;
+    position: relative !important;
+    height: var(--topbar-h) !important;
+    min-height: var(--topbar-h) !important;
+  }
+
+  #nav-rail {
+    grid-row: 2 !important;
+    grid-column: 1 !important;
+    position: relative !important;
+    display: flex !important;
+    flex-direction: column !important;
+    width: auto !important;
+    height: auto !important;
+    padding: var(--space-3) var(--space-1) !important;
+    border-right: 1px solid var(--border) !important;
+    border-top: none !important;
+    order: unset !important;
+    justify-content: flex-start !important;
+    align-items: stretch !important;
+  }
+
+  .nav-item {
+    flex-direction: row !important;
+    justify-content: flex-start !important;
+    padding: 10px var(--space-3) !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+
+  #main {
+    grid-row: 2 !important;
+    grid-column: 2 !important;
+    order: unset !important;
+  }
+
+  .search-box {
+    display: flex !important;
+  }
+  .nav-toggle {
+    display: flex !important;
+  }
+}
+
+/* ============================================================
    RESPONSIVE — TABLET
    ============================================================ */
 @media (max-width: 1200px) {
