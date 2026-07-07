@@ -1,6 +1,199 @@
 /* ============================================================
    TOKENS & THEMES
    ============================================================ */
+
+   /* ============================================================
+   CONFIG EDITOR — bulletproof (no media query dependency)
+   ============================================================ */
+.config-editor {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  min-height: 500px;
+}
+
+.config-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-tab {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 200ms ease;
+}
+
+.config-tab:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.config-tab.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.config-tab-icon {
+  width: 16px;
+  height: 16px;
+  opacity: 0.7;
+}
+
+.config-panel {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.config-panel-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+
+.config-panel-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.config-field {
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+
+.config-field:last-child {
+  border-bottom: none;
+}
+
+.config-field-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.config-field-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.config-field-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.config-field-input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  transition: all 200ms ease;
+}
+
+.config-field-input:hover {
+  border-color: var(--border-strong);
+}
+
+.config-field-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+.config-field-input.dirty,
+.config-select.dirty {
+  border-color: var(--yellow);
+  background: var(--yellow-dim);
+}
+
+.config-select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.config-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.config-checkbox {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.config-diff-panel {
+  background: var(--bg-2);
+  border: 1px solid var(--yellow-dim);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.config-diff-title {
+  color: var(--yellow);
+  font-weight: 600;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-diff-row {
+  padding: 4px 0;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.config-diff-key {
+  color: var(--text-dim);
+}
+
+.config-diff-old {
+  color: var(--red);
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.config-diff-new {
+  color: var(--green);
+}
+
 :root {
   --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Menlo', 'Fira Code', monospace;
