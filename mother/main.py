@@ -527,8 +527,22 @@ class Mother:
 
         self.log.info(f"Feeding {len(ticks):,} warmup ticks...")
         bars = []
+        # Detect broker offset from FIRST tick vs "now"
+        # (both should be near the same absolute time)
+        now_utc = int(datetime.now(timezone.utc).timestamp())
+        first_tick_time = int(ticks[0]["time"]) if len(ticks) > 0 else now_utc
+        # Approx offset: how many seconds is broker ahead of real UTC?
+        # The warmup fetched "3 days back" using our system time as anchor,
+        # but broker returns broker-time. The LAST tick of warmup should be
+        # very close to broker's "now".
+        last_tick_time = int(ticks[-1]["time"]) if len(ticks) > 0 else now_utc
+        broker_offset_sec = last_tick_time - now_utc
+        if abs(broker_offset_sec) < 300:  # within 5 min = broker uses UTC
+            broker_offset_sec = 0
+        self.log.info(f"Warmup broker time offset: {broker_offset_sec}s ({broker_offset_sec/3600:.1f}h)")
+
         for t in ticks:
-            ts_int = int(t["time"])
+            ts_int = int(t["time"]) - broker_offset_sec   # normalize to real UTC
             bid = float(t["bid"])
             ask = float(t["ask"])
             price = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else (bid or ask or float(t.get("last", 0)))
@@ -545,6 +559,16 @@ class Mother:
         for b in bars[-BRICK_BUFFER_SIZE:]:
             self.state.push_brick(b)
         self.log.info(f"Warmup done. {len(bars)} bars loaded, brain armed.")
+
+        # Reset renko timestamp tracker so live UTC timestamps (which will be much
+        # smaller than broker warmup ts values) don't get force-incremented from
+        # broker-future values. This lets live bricks emit with real UTC epoch times.
+        self.renko._last_ts = 0
+
+        # Also seed brain's abs_start_index for continuity — warmup bars filled
+        # index 0..len(bars)-1, so next brick will be at index len(bars).
+        # (StrategyBrain already handles this via prepend_history's abs_start_index=0)
+
         self.mt5_ready_event.set()
 
     async def tick_loop(self):
@@ -561,7 +585,7 @@ class Mother:
                     await asyncio.sleep(POLL_INTERVAL_MS / 1000)
                     continue
 
-                ts_int = int(tick.time)
+                ts_int = int(datetime.now(timezone.utc).timestamp())
                 bid = float(tick.bid)
                 ask = float(tick.ask)
                 if bid > 0 and ask > 0:
