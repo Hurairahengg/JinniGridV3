@@ -1325,6 +1325,38 @@ class Mother:
                 await self._send_cmd_to_vm(vm_id, "CLOSE_ALL_POSITIONS", {})
             elif action == "shutdown":
                 await self._send_cmd_to_vm(vm_id, "SHUTDOWN", {})
+            elif action == "delete_trade":
+                trade_id = msg.get("trade_id")
+                if trade_id:
+                    self.db.conn.execute("DELETE FROM trades WHERE id=?", (trade_id,))
+                    self.db.conn.commit()
+                    self.log.info(f"Deleted trade {trade_id} from DB")
+                    await self._broadcast_dashboard({
+                        "type": "toast", "level": "success",
+                        "message": f"Deleted trade {trade_id[:12]}"
+                    })
+                    # Force refresh initial state so DB change reflects on dashboard
+                    for client in list(self.dashboard_clients):
+                        try:
+                            await self._send_initial_state(client)
+                        except Exception:
+                            pass
+            elif action == "delete_trades_bulk":
+                trade_ids = msg.get("trade_ids", [])
+                if trade_ids:
+                    marks = ",".join("?" for _ in trade_ids)
+                    self.db.conn.execute(f"DELETE FROM trades WHERE id IN ({marks})", trade_ids)
+                    self.db.conn.commit()
+                    self.log.info(f"Bulk deleted {len(trade_ids)} trades")
+                    await self._broadcast_dashboard({
+                        "type": "toast", "level": "success",
+                        "message": f"Deleted {len(trade_ids)} trades"
+                    })
+                    for client in list(self.dashboard_clients):
+                        try:
+                            await self._send_initial_state(client)
+                        except Exception:
+                            pass
             elif action == "push_config":
                 cfg = msg.get("config")
                 reason = msg.get("reason", "dashboard edit")

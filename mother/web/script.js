@@ -1039,6 +1039,9 @@ function bindVmSelector(routeName) {
   });
 }
 
+/* ============================================================
+   PORTFOLIO — comprehensive VM view with equity curve + stats
+   ============================================================ */
 function renderStats() {
   const vms = Object.values(store.state.vms);
   if (vms.length === 0) {
@@ -1049,7 +1052,7 @@ function renderStats() {
   const vm = store.state.vms[store.state.selectedVm];
   if (!vm) return;
 
-  const trades = (vm.trades || []).filter(t => t.exit_ts);
+  const trades = (vm.trades || []).filter(t => t.exit_ts).sort((a, b) => (a.exit_ts || 0) - (b.exit_ts || 0));
   const wins = trades.filter(t => (t.realized_pnl || 0) > 0);
   const losses = trades.filter(t => (t.realized_pnl || 0) <= 0);
   const wr = trades.length > 0 ? (wins.length / trades.length * 100) : 0;
@@ -1065,46 +1068,376 @@ function renderStats() {
   const longNet = longs.reduce((s, t) => s + (t.realized_pnl || 0), 0);
   const shortNet = shorts.reduce((s, t) => s + (t.realized_pnl || 0), 0);
   const bal = vm.balance || 0;
+  const bestTrade = trades.length ? Math.max(...trades.map(t => t.realized_pnl || 0)) : 0;
+  const worstTrade = trades.length ? Math.min(...trades.map(t => t.realized_pnl || 0)) : 0;
+
+  // Drawdown analysis
+  let peak = 0, maxDD = 0, ddPct = 0;
+  let cumSum = 0;
+  const equityCurve = [];
+  const drawdownCurve = [];
+  for (let i = 0; i < trades.length; i++) {
+    cumSum += trades[i].realized_pnl || 0;
+    equityCurve.push({ x: i + 1, y: parseFloat(cumSum.toFixed(2)) });
+    if (cumSum > peak) peak = cumSum;
+    const dd = cumSum - peak;
+    if (dd < maxDD) {
+      maxDD = dd;
+      if (peak > 0) ddPct = Math.abs(dd) / peak * 100;
+    }
+    drawdownCurve.push({ x: i + 1, y: parseFloat(dd.toFixed(2)) });
+  }
+
+  // Streak analysis
+  let currentStreak = 0, streakType = "none";
+  let bestWinStreak = 0, bestLossStreak = 0, curWin = 0, curLoss = 0;
+  for (const t of trades) {
+    if ((t.realized_pnl || 0) > 0) {
+      curWin++; curLoss = 0;
+      if (curWin > bestWinStreak) bestWinStreak = curWin;
+    } else {
+      curLoss++; curWin = 0;
+      if (curLoss > bestLossStreak) bestLossStreak = curLoss;
+    }
+  }
+  if (trades.length > 0) {
+    const last = trades[trades.length - 1];
+    currentStreak = (last.realized_pnl || 0) > 0 ? curWin : -curLoss;
+    streakType = (last.realized_pnl || 0) > 0 ? "win" : "loss";
+  }
+
+  // Duration stats
+  const durations = trades.filter(t => t.entry_ts && t.exit_ts).map(t => t.exit_ts - t.entry_ts);
+  const avgDurSec = durations.length ? durations.reduce((s, d) => s + d, 0) / durations.length : 0;
+  const medDurSec = durations.length ? [...durations].sort((a, b) => a - b)[Math.floor(durations.length / 2)] : 0;
+
+  // WR by day of week
+  const dayStats = { 0: [0, 0], 1: [0, 0], 2: [0, 0], 3: [0, 0], 4: [0, 0], 5: [0, 0], 6: [0, 0] };
+  for (const t of trades) {
+    if (!t.entry_ts) continue;
+    const day = new Date(t.entry_ts * 1000).getUTCDay();
+    dayStats[day][0]++;
+    if ((t.realized_pnl || 0) > 0) dayStats[day][1]++;
+  }
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  // PnL distribution buckets
+  const pnlBuckets = { verySmall: 0, small: 0, medium: 0, large: 0, veryLarge: 0 };
+  for (const t of trades) {
+    const p = Math.abs(t.realized_pnl || 0);
+    if (p < 10) pnlBuckets.verySmall++;
+    else if (p < 50) pnlBuckets.small++;
+    else if (p < 200) pnlBuckets.medium++;
+    else if (p < 1000) pnlBuckets.large++;
+    else pnlBuckets.veryLarge++;
+  }
 
   document.getElementById("main").innerHTML = `
     <div class="page">
       <div class="page-header">
         <div>
-          <div class="page-title">Statistics</div>
-          <div class="page-subtitle">${escapeHtml(vm.vm_id)}</div>
+          <div class="page-title">Portfolio</div>
+          <div class="page-subtitle">${escapeHtml(vm.vm_id)} · deep dive</div>
         </div>
         <div>${vmSelectorHTML(store.state.selectedVm)}</div>
       </div>
+
       <div class="kpi-grid">
-        <div class="kpi-card"><div class="kpi-label">Win Rate</div><div class="kpi-value">${trades.length > 0 ? wr.toFixed(1) + "%" : "—"}</div><div class="kpi-sub"><span>${wins.length}W / ${losses.length}L</span></div></div>
-        <div class="kpi-card"><div class="kpi-label">Profit Factor</div><div class="kpi-value">${isFinite(pf) && pf > 0 ? pf.toFixed(2) : "—"}</div><div class="kpi-sub"><span>${pf >= 1.2 ? "deployable" : "review"}</span></div></div>
-        <div class="kpi-card"><div class="kpi-label">Net PnL</div><div class="kpi-value ${pnlClass(net)}">${pnlSign(net)}${fmt$(net, 0)}</div><div class="kpi-sub"><span>${trades.length} trades</span></div></div>
-        <div class="kpi-card"><div class="kpi-label">Balance</div><div class="kpi-value">${fmt$(bal, 0)}</div><div class="kpi-sub"><span>${escapeHtml(vm.status || "?")}</span></div></div>
+        <div class="kpi-card">
+          <div class="kpi-label">Balance</div>
+          <div class="kpi-value">${fmt$(bal, 0)}</div>
+          <div class="kpi-sub"><span>${escapeHtml(vm.status || "?")}</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Total Net</div>
+          <div class="kpi-value ${pnlClass(net)}">${pnlSign(net)}${fmt$(net, 0)}</div>
+          <div class="kpi-sub"><span>${trades.length} closed trades</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Win Rate</div>
+          <div class="kpi-value">${trades.length > 0 ? wr.toFixed(1) + "%" : "—"}</div>
+          <div class="kpi-sub"><span>${wins.length}W / ${losses.length}L</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Profit Factor</div>
+          <div class="kpi-value">${isFinite(pf) && pf > 0 ? pf.toFixed(2) : "—"}</div>
+          <div class="kpi-sub"><span>${pf >= 1.5 ? "strong" : pf >= 1.2 ? "OK" : "review"}</span></div>
+        </div>
       </div>
+
+      <div class="grid-2" style="margin-bottom: var(--space-4);">
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Equity Curve (by trade)</div>
+              <div class="card-subtitle">Cumulative PnL over trades</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="portfolio-equity-chart" style="height: 300px;"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Drawdown Curve</div>
+              <div class="card-subtitle">Underwater over trades</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div id="portfolio-dd-chart" style="height: 300px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-bottom: var(--space-4);">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">PnL Distribution</div>
+          </div>
+          <div class="card-body">
+            <div id="portfolio-pnl-hist" style="height: 260px;"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Long vs Short PnL</div>
+          </div>
+          <div class="card-body">
+            <div id="portfolio-dir-chart" style="height: 260px;"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="grid-3">
-        <div class="card"><div class="card-header"><div class="card-title">Averages</div></div><div class="card-body">
-          <div class="detail-row"><span class="k">Avg win</span><span class="v pos">${fmt$(avgWin)}</span></div>
-          <div class="detail-row"><span class="k">Avg loss</span><span class="v neg">${fmt$(avgLoss)}</span></div>
-          <div class="detail-row"><span class="k">Expectancy</span><span class="v ${pnlClass(expectancy)}">${fmt$(expectancy)}</span></div>
-          <div class="detail-row"><span class="k">Best</span><span class="v pos">${trades.length ? fmt$(Math.max(...trades.map(t => t.realized_pnl || 0))) : "—"}</span></div>
-          <div class="detail-row"><span class="k">Worst</span><span class="v neg">${trades.length ? fmt$(Math.min(...trades.map(t => t.realized_pnl || 0))) : "—"}</span></div>
-        </div></div>
-        <div class="card"><div class="card-header"><div class="card-title">Longs</div></div><div class="card-body">
-          <div class="detail-row"><span class="k">Count</span><span class="v">${longs.length}</span></div>
-          <div class="detail-row"><span class="k">Net</span><span class="v ${pnlClass(longNet)}">${pnlSign(longNet)}${fmt$(longNet)}</span></div>
-          <div class="detail-row"><span class="k">WR</span><span class="v">${longs.length > 0 ? (longs.filter(t => (t.realized_pnl || 0) > 0).length / longs.length * 100).toFixed(1) + "%" : "—"}</span></div>
-        </div></div>
-        <div class="card"><div class="card-header"><div class="card-title">Shorts</div></div><div class="card-body">
-          <div class="detail-row"><span class="k">Count</span><span class="v">${shorts.length}</span></div>
-          <div class="detail-row"><span class="k">Net</span><span class="v ${pnlClass(shortNet)}">${pnlSign(shortNet)}${fmt$(shortNet)}</span></div>
-          <div class="detail-row"><span class="k">WR</span><span class="v">${shorts.length > 0 ? (shorts.filter(t => (t.realized_pnl || 0) > 0).length / shorts.length * 100).toFixed(1) + "%" : "—"}</span></div>
-        </div></div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Averages</div></div>
+          <div class="card-body">
+            <div class="detail-row"><span class="k">Avg win</span><span class="v pos">${fmt$(avgWin)}</span></div>
+            <div class="detail-row"><span class="k">Avg loss</span><span class="v neg">${fmt$(avgLoss)}</span></div>
+            <div class="detail-row"><span class="k">Expectancy</span><span class="v ${pnlClass(expectancy)}">${fmt$(expectancy)}</span></div>
+            <div class="detail-row"><span class="k">Best trade</span><span class="v pos">${fmt$(bestTrade)}</span></div>
+            <div class="detail-row"><span class="k">Worst trade</span><span class="v neg">${fmt$(worstTrade)}</span></div>
+            <div class="detail-row"><span class="k">Ratio (W/L)</span><span class="v">${avgLoss !== 0 ? (Math.abs(avgWin/avgLoss)).toFixed(2) : "—"}</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Risk</div></div>
+          <div class="card-body">
+            <div class="detail-row"><span class="k">Max DD $</span><span class="v neg">${fmt$(maxDD)}</span></div>
+            <div class="detail-row"><span class="k">Max DD %</span><span class="v neg">${ddPct.toFixed(2)}%</span></div>
+            <div class="detail-row"><span class="k">Recovery Factor</span><span class="v">${maxDD !== 0 ? (net / Math.abs(maxDD)).toFixed(2) : "—"}</span></div>
+            <div class="detail-row"><span class="k">Best win streak</span><span class="v pos">${bestWinStreak}</span></div>
+            <div class="detail-row"><span class="k">Worst loss streak</span><span class="v neg">${bestLossStreak}</span></div>
+            <div class="detail-row"><span class="k">Current streak</span><span class="v ${streakType === 'win' ? 'pos' : streakType === 'loss' ? 'neg' : ''}">${currentStreak !== 0 ? (currentStreak > 0 ? '+' : '') + currentStreak : '—'}</span></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><div class="card-title">Duration</div></div>
+          <div class="card-body">
+            <div class="detail-row"><span class="k">Avg</span><span class="v">${fmtDuration(avgDurSec)}</span></div>
+            <div class="detail-row"><span class="k">Median</span><span class="v">${fmtDuration(medDurSec)}</span></div>
+            <div class="detail-row"><span class="k">Longs</span><span class="v">${longs.length} @ ${fmt$(longNet, 0)}</span></div>
+            <div class="detail-row"><span class="k">Shorts</span><span class="v">${shorts.length} @ ${fmt$(shortNet, 0)}</span></div>
+            <div class="detail-row"><span class="k">Long WR</span><span class="v">${longs.length > 0 ? (longs.filter(t => (t.realized_pnl || 0) > 0).length / longs.length * 100).toFixed(1) + "%" : "—"}</span></div>
+            <div class="detail-row"><span class="k">Short WR</span><span class="v">${shorts.length > 0 ? (shorts.filter(t => (t.realized_pnl || 0) > 0).length / shorts.length * 100).toFixed(1) + "%" : "—"}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: var(--space-4);">
+        <div class="card-header">
+          <div class="card-title">Trading by Day of Week</div>
+        </div>
+        <div class="card-body">
+          <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 8px;">
+            ${dayNames.map((name, i) => {
+              const [tot, w] = dayStats[i];
+              const dayWr = tot > 0 ? (w / tot * 100) : 0;
+              const active = i >= 1 && i <= 5;
+              return `
+                <div style="background: ${active ? 'var(--bg-2)' : 'var(--bg-3)'}; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid var(--border);">
+                  <div style="font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;">${name}</div>
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 6px; color: var(--text);">${tot}</div>
+                  <div style="font-size: 11px; color: ${dayWr >= 50 ? 'var(--green)' : dayWr > 0 ? 'var(--yellow)' : 'var(--text-muted)'}; margin-top: 2px;">${tot > 0 ? dayWr.toFixed(0) + "%" : "—"}</div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        </div>
       </div>
     </div>
   `;
+
   bindVmSelector("stats");
+
+  // Render charts
+  setTimeout(() => {
+    renderPortfolioEquityChart(equityCurve);
+    renderPortfolioDDChart(drawdownCurve);
+    renderPortfolioPnlHist(trades);
+    renderPortfolioDirChart(longs, shorts);
+  }, 50);
 }
 
+function fmtDuration(sec) {
+  if (!sec) return "—";
+  if (sec < 60) return `${sec.toFixed(0)}s`;
+  if (sec < 3600) return `${(sec / 60).toFixed(1)}m`;
+  if (sec < 86400) return `${(sec / 3600).toFixed(1)}h`;
+  return `${(sec / 86400).toFixed(1)}d`;
+}
+
+function renderPortfolioEquityChart(points) {
+  const el = document.getElementById("portfolio-equity-chart");
+  if (!el || points.length === 0) {
+    if (el) el.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:12px;">No trades yet</div>`;
+    return;
+  }
+  const green = getCSSVar("--green");
+  const red = getCSSVar("--red");
+  const textDim = getCSSVar("--text-dim");
+  const border = getCSSVar("--border");
+  const isPositive = points[points.length - 1].y >= 0;
+
+  const chart = new ApexCharts(el, {
+    chart: {
+      type: 'area', height: 300, background: 'transparent',
+      foreColor: textDim, toolbar: { show: false }, animations: { enabled: true, speed: 300 },
+      zoom: { enabled: false },
+    },
+    series: [{ name: 'Equity', data: points }],
+    stroke: { curve: 'smooth', width: 2, colors: [isPositive ? green : red] },
+    fill: {
+      type: 'gradient',
+      gradient: { shade: 'dark', type: 'vertical', shadeIntensity: 0.5, gradientToColors: [isPositive ? green : red], opacityFrom: 0.4, opacityTo: 0.05, stops: [0, 100] }
+    },
+    dataLabels: { enabled: false },
+    grid: { borderColor: border, strokeDashArray: 3 },
+    xaxis: { type: 'numeric', title: { text: 'Trade #', style: { color: textDim, fontSize: '10px' } }, labels: { style: { colors: textDim, fontSize: '10px' } } },
+    yaxis: { labels: { style: { colors: textDim, fontSize: '10px' }, formatter: v => "$" + Math.round(v).toLocaleString() } },
+    tooltip: { theme: 'dark', y: { formatter: v => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } },
+    annotations: { yaxis: [{ y: 0, borderColor: textDim, strokeDashArray: 4, opacity: 0.5 }] }
+  });
+  chart.render();
+}
+
+function renderPortfolioDDChart(points) {
+  const el = document.getElementById("portfolio-dd-chart");
+  if (!el || points.length === 0) {
+    if (el) el.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:12px;">No trades yet</div>`;
+    return;
+  }
+  const red = getCSSVar("--red");
+  const textDim = getCSSVar("--text-dim");
+  const border = getCSSVar("--border");
+
+  const chart = new ApexCharts(el, {
+    chart: {
+      type: 'area', height: 300, background: 'transparent',
+      foreColor: textDim, toolbar: { show: false }, animations: { enabled: true, speed: 300 },
+      zoom: { enabled: false },
+    },
+    series: [{ name: 'Drawdown', data: points }],
+    stroke: { curve: 'smooth', width: 2, colors: [red] },
+    fill: { type: 'gradient', gradient: { shade: 'dark', type: 'vertical', shadeIntensity: 0.5, gradientToColors: [red], opacityFrom: 0.5, opacityTo: 0.1, stops: [0, 100] } },
+    dataLabels: { enabled: false },
+    grid: { borderColor: border, strokeDashArray: 3 },
+    xaxis: { type: 'numeric', title: { text: 'Trade #', style: { color: textDim, fontSize: '10px' } }, labels: { style: { colors: textDim, fontSize: '10px' } } },
+    yaxis: { labels: { style: { colors: textDim, fontSize: '10px' }, formatter: v => "$" + Math.round(v).toLocaleString() } },
+    tooltip: { theme: 'dark', y: { formatter: v => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) } },
+  });
+  chart.render();
+}
+
+function renderPortfolioPnlHist(trades) {
+  const el = document.getElementById("portfolio-pnl-hist");
+  if (!el || trades.length === 0) {
+    if (el) el.innerHTML = `<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:12px;">No trades yet</div>`;
+    return;
+  }
+
+  // Build histogram buckets from actual PnL values
+  const pnls = trades.map(t => t.realized_pnl || 0);
+  const min = Math.min(...pnls);
+  const max = Math.max(...pnls);
+  const bucketCount = 15;
+  const bucketSize = (max - min) / bucketCount || 1;
+  const buckets = new Array(bucketCount).fill(0);
+  const bucketLabels = [];
+  for (let i = 0; i < bucketCount; i++) {
+    bucketLabels.push(Math.round(min + i * bucketSize));
+  }
+  for (const p of pnls) {
+    let idx = Math.floor((p - min) / bucketSize);
+    if (idx >= bucketCount) idx = bucketCount - 1;
+    if (idx < 0) idx = 0;
+    buckets[idx]++;
+  }
+
+  const green = getCSSVar("--green");
+  const red = getCSSVar("--red");
+  const textDim = getCSSVar("--text-dim");
+  const border = getCSSVar("--border");
+  const colors = bucketLabels.map(v => v >= 0 ? green : red);
+
+  const chart = new ApexCharts(el, {
+    chart: { type: 'bar', height: 260, background: 'transparent', foreColor: textDim, toolbar: { show: false } },
+    series: [{ name: 'Trades', data: buckets }],
+    plotOptions: { bar: { distributed: true, borderRadius: 3 } },
+    colors: colors,
+    dataLabels: { enabled: false },
+    legend: { show: false },
+    grid: { borderColor: border, strokeDashArray: 3 },
+    xaxis: {
+      categories: bucketLabels.map(v => "$" + v),
+      labels: { style: { colors: textDim, fontSize: '9px' } }
+    },
+    yaxis: { labels: { style: { colors: textDim, fontSize: '10px' } } },
+    tooltip: { theme: 'dark' }
+  });
+  chart.render();
+}
+
+function renderPortfolioDirChart(longs, shorts) {
+  const el = document.getElementById("portfolio-dir-chart");
+  if (!el) return;
+
+  const longNet = longs.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+  const shortNet = shorts.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+  const longWr = longs.length > 0 ? (longs.filter(t => (t.realized_pnl || 0) > 0).length / longs.length * 100) : 0;
+  const shortWr = shorts.length > 0 ? (shorts.filter(t => (t.realized_pnl || 0) > 0).length / shorts.length * 100) : 0;
+
+  const green = getCSSVar("--green");
+  const red = getCSSVar("--red");
+  const textDim = getCSSVar("--text-dim");
+  const border = getCSSVar("--border");
+
+  const chart = new ApexCharts(el, {
+    chart: { type: 'bar', height: 260, background: 'transparent', foreColor: textDim, toolbar: { show: false } },
+    series: [
+      { name: 'Net PnL', data: [longNet, shortNet] },
+      { name: 'Win Rate %', data: [longWr, shortWr] }
+    ],
+    stroke: { width: [0, 3] },
+    plotOptions: { bar: { borderRadius: 4, columnWidth: '60%' } },
+    colors: [longNet >= 0 ? green : red, "#a78bfa"],
+    dataLabels: { enabled: false },
+    grid: { borderColor: border, strokeDashArray: 3 },
+    xaxis: {
+      categories: ['LONG (' + longs.length + ')', 'SHORT (' + shorts.length + ')'],
+      labels: { style: { colors: textDim, fontSize: '10px' } }
+    },
+    yaxis: [
+      { seriesName: 'Net PnL', labels: { style: { colors: textDim, fontSize: '10px' }, formatter: v => "$" + Math.round(v) } },
+      { seriesName: 'Win Rate %', opposite: true, labels: { style: { colors: textDim, fontSize: '10px' }, formatter: v => v.toFixed(0) + "%" } }
+    ],
+    tooltip: { theme: 'dark' }
+  });
+  chart.render();
+}
 /* ============================================================
    FLEET (cards per VM)
    ============================================================ */
@@ -1367,6 +1700,10 @@ const CONFIG_SCHEMA = {
       { path: "mt5.timeout_ms", label: "Timeout (ms)", type: "number", step: 1000 },
     ],
   },
+  database: {
+    icon: "🗄", title: "Database", desc: "Manage stored trades and events",
+    special: "database",
+  },
 };
 
 let configDraft = null;
@@ -1405,6 +1742,24 @@ function computeConfigDiff() {
   };
   walk(configOriginal, configDraft);
   return changes;
+}
+
+function bindDbDeleteButtons() {
+  document.querySelectorAll(".db-delete-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const tid = btn.dataset.tid;
+      if (!confirm(`Permanently delete trade #${tid.slice(0, 12)}?`)) return;
+      const vm = store.state.vms[store.state.selectedVm];
+      ws.send(JSON.stringify({
+        type: "command",
+        action: "delete_trade",
+        vm_id: vm.vm_id,
+        trade_id: tid
+      }));
+      toast("Deleting trade…", "info");
+    });
+  });
 }
 
 function renderConfig() {
@@ -1455,6 +1810,45 @@ function renderConfig() {
   `;
 
   document.querySelectorAll(".config-tab").forEach(el => el.addEventListener("click", () => { configActiveTab = el.dataset.tab; renderConfig(); }));
+ 
+  // Database tab handlers
+  document.querySelectorAll("[data-db-filter]").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const filter = chip.dataset.dbFilter;
+      document.querySelectorAll("[data-db-filter]").forEach(c => c.classList.remove("active"));
+      chip.classList.add("active");
+      const vm = store.state.vms[store.state.selectedVm];
+      let filtered = (vm.trades || []).sort((a, b) => (b.entry_ts || 0) - (a.entry_ts || 0));
+      if (filter === "open") filtered = filtered.filter(t => !t.exit_ts);
+      else if (filter === "closed") filtered = filtered.filter(t => t.exit_ts);
+      else if (filter === "orphaned") filtered = filtered.filter(t => (t.exit_reason || "").includes("orphaned") || (t.exit_reason || "").includes("unknown") || (t.entry_price || 0) === 0);
+      const list = document.getElementById("db-trade-list");
+      if (list) {
+        list.innerHTML = renderDatabaseTradeList(filtered);
+        bindDbDeleteButtons();
+      }
+    });
+  });
+
+  bindDbDeleteButtons();
+
+  document.getElementById("db-cleanup-btn")?.addEventListener("click", () => {
+    const vm = store.state.vms[store.state.selectedVm];
+    const orphaned = (vm.trades || []).filter(t => (t.exit_reason || "").includes("orphaned") || (t.exit_reason || "").includes("unknown"));
+    if (orphaned.length === 0) {
+      toast("No ghost trades to clean", "info");
+      return;
+    }
+    if (!confirm(`Delete ${orphaned.length} ghost/orphaned trade(s)? This is permanent.`)) return;
+    ws.send(JSON.stringify({
+      type: "command",
+      action: "delete_trades_bulk",
+      vm_id: vm.vm_id,
+      trade_ids: orphaned.map(t => t.trade_id)
+    }));
+    toast(`Requested deletion of ${orphaned.length} trades…`, "info");
+  });
+
   document.querySelectorAll("[data-field-path]").forEach(el => {
     const handler = (e) => {
       const path = e.target.dataset.fieldPath;
@@ -1485,11 +1879,84 @@ function renderConfig() {
 
 function renderConfigPanel(tabKey, diff) {
   const spec = CONFIG_SCHEMA[tabKey];
+  if (spec.special === "database") {
+    return renderDatabaseTab();
+  }
   return `
     <div class="config-panel-title">${spec.icon} ${spec.title}</div>
     <div class="config-panel-desc">${spec.desc}</div>
     ${spec.fields.map(f => renderConfigField(f, diff)).join("")}
   `;
+}
+
+function renderDatabaseTab() {
+  const vm = store.state.vms[store.state.selectedVm];
+  if (!vm) return "";
+  const allTrades = (vm.trades || []).sort((a, b) => (b.entry_ts || 0) - (a.entry_ts || 0));
+  const openTrades = allTrades.filter(t => !t.exit_ts);
+  const closedTrades = allTrades.filter(t => t.exit_ts);
+  const orphanedTrades = allTrades.filter(t => (t.exit_reason || "").includes("orphaned") || (t.exit_reason || "").includes("unknown"));
+
+  return `
+    <div class="config-panel-title">🗄 Database Manager</div>
+    <div class="config-panel-desc">View and manage the stored trade history for this VM. Deleting trades is permanent.</div>
+
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
+      <div style="background: var(--bg-2); padding: 14px; border-radius: 8px; border: 1px solid var(--border);">
+        <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">Total</div>
+        <div style="font-size: 22px; font-weight: 700; margin-top: 4px;">${allTrades.length}</div>
+      </div>
+      <div style="background: var(--bg-2); padding: 14px; border-radius: 8px; border: 1px solid var(--border);">
+        <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">Closed</div>
+        <div style="font-size: 22px; font-weight: 700; margin-top: 4px; color: var(--green);">${closedTrades.length}</div>
+      </div>
+      <div style="background: var(--bg-2); padding: 14px; border-radius: 8px; border: 1px solid var(--border);">
+        <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">Open</div>
+        <div style="font-size: 22px; font-weight: 700; margin-top: 4px; color: var(--accent);">${openTrades.length}</div>
+      </div>
+      <div style="background: var(--bg-2); padding: 14px; border-radius: 8px; border: 1px solid var(--border);">
+        <div style="font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px;">Ghost/Orphaned</div>
+        <div style="font-size: 22px; font-weight: 700; margin-top: 4px; color: var(--yellow);">${orphanedTrades.length}</div>
+      </div>
+    </div>
+
+    <div class="chip-row" style="margin-bottom: 12px;">
+      <div class="chip active" data-db-filter="all">All (${allTrades.length})</div>
+      <div class="chip" data-db-filter="open">Open (${openTrades.length})</div>
+      <div class="chip" data-db-filter="closed">Closed (${closedTrades.length})</div>
+      <div class="chip" data-db-filter="orphaned">Ghost/Orphaned (${orphanedTrades.length})</div>
+      <div style="flex: 1"></div>
+      <button class="btn danger" id="db-cleanup-btn" style="padding: 4px 12px; font-size: 11px;">Auto-Clean Ghosts</button>
+    </div>
+
+    <div id="db-trade-list" style="max-height: 500px; overflow-y: auto; background: var(--bg-2); border-radius: 8px; border: 1px solid var(--border);">
+      ${renderDatabaseTradeList(allTrades)}
+    </div>
+  `;
+}
+
+function renderDatabaseTradeList(trades) {
+  if (trades.length === 0) return `<div style="padding: 40px; text-align: center; color: var(--text-muted); font-family: var(--font-mono); font-size: 12px;">No trades match filter</div>`;
+  return trades.slice(0, 500).map(t => {
+    const dir = t.direction === 1 ? "LONG" : t.direction === -1 ? "SHORT" : "?";
+    const dateStr = t.entry_ts ? new Date(t.entry_ts * 1000).toISOString().replace("T", " ").slice(0, 16) : "—";
+    const pnl = t.realized_pnl != null ? pnlSign(t.realized_pnl) + fmt$(t.realized_pnl) : "OPEN";
+    const isGhost = (t.exit_reason || "").includes("orphaned") || (t.exit_reason || "").includes("unknown") || (t.entry_price || 0) === 0;
+    return `
+      <div class="db-trade-row" style="display: grid; grid-template-columns: 90px 40px 30px 1fr 100px 90px 60px; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-family: var(--font-mono); font-size: 11px; align-items: center; ${isGhost ? 'background: rgba(251, 191, 36, 0.05);' : ''}">
+        <div style="color: var(--text-muted); font-size: 10px;">#${String(t.trade_id).slice(0, 8)}</div>
+        <div class="badge ${t.exit_ts ? ((t.realized_pnl || 0) > 0 ? 'WIN' : 'LOSS') : 'OPEN'}" style="padding: 2px 6px; font-size: 9px;">${t.exit_ts ? ((t.realized_pnl || 0) > 0 ? 'W' : 'L') : 'O'}</div>
+        <div class="dir-arrow ${dir}" style="text-align: center; font-weight: 700;">${dir === 'LONG' ? '▲' : dir === 'SHORT' ? '▼' : '?'}</div>
+        <div style="color: var(--text-dim); font-size: 10px;">
+          ${dateStr}
+          ${isGhost ? `<div style="color: var(--yellow); font-size: 9px; margin-top: 2px;">⚠ ${escapeHtml(t.exit_reason || "ghost")}</div>` : ""}
+        </div>
+        <div style="color: var(--text-dim); font-size: 10px;">${(t.entry_price || 0).toFixed(2)} → ${(t.exit_price || 0).toFixed(2)}</div>
+        <div class="${pnlClass(t.realized_pnl)}" style="text-align: right; font-weight: 700;">${pnl}</div>
+        <button class="btn danger db-delete-btn" data-tid="${escapeHtml(t.trade_id)}" style="padding: 3px 10px; font-size: 10px;">Delete</button>
+      </div>
+    `;
+  }).join("");
 }
 
 function updateConfigDirtyStateInline() {
@@ -1643,11 +2110,11 @@ const cmdkCommands = [
   { label: "Go to Dashboard", route: "overview", hint: "1" },
   { label: "Go to Live Chart", route: "live", hint: "2" },
   { label: "Go to Trades", route: "trades", hint: "3" },
-  { label: "Go to Stats", route: "stats", hint: "4" },
+  { label: "Go to Portfolio", route: "stats", hint: "4" },
   { label: "Go to Fleet", route: "fleet", hint: "5" },
   { label: "Go to Validation", route: "validation", hint: "6" },
   { label: "Go to Logs", route: "logs", hint: "7" },
-  { label: "Go to Config", route: "config", hint: "8", requiresUnlock: true },
+  { label: "Go to Settings", route: "config", hint: "8", requiresUnlock: true },
   { label: "Cycle Theme", action: cycleTheme, hint: "T" },
   { label: "Toggle Nav", action: toggleNav, hint: "\\" },
 ];
