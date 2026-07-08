@@ -240,12 +240,14 @@ class FleetDB:
             "validation_status TEXT",
             "validation_confidence REAL",
             "mismatch_details TEXT",
+            "recovery_status TEXT",
+            "recovered_at INTEGER",
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col}")
                 self.conn.commit()
             except sqlite3.OperationalError:
-                pass  # already exists
+                pass
 
     def upsert_vm(self, vm_id, updates):
         existing = self.conn.execute("SELECT id FROM vms WHERE id=?", (vm_id,)).fetchone()
@@ -291,6 +293,49 @@ class FleetDB:
             WHERE id=?
         """, (status, confidence, json.dumps(details_dict), trade_id))
         self.conn.commit()
+    def mark_recovered(self, trade_id, status):
+        """Mark a trade as recovered/reconciled."""
+        self.conn.execute(
+            "UPDATE trades SET recovery_status=?, recovered_at=? WHERE id=?",
+            (status, int(time.time()), trade_id)
+        )
+        self.conn.commit()
+
+    def insert_recovered_trade(self, vm_id, position):
+        """Create a DB record for a recovered open position."""
+        trade_id = f"recovered_{position['ticket']}"
+        signal_id = position.get("signal_id") or f"recovered_{position['ticket']}"
+        try:
+            self.conn.execute("""
+                INSERT OR IGNORE INTO trades
+                (id, vm_id, signal_id, symbol, direction, entry_time, entry_price, sl_price, lots, mt5_ticket, recovery_status, recovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trade_id, vm_id, signal_id, position["symbol"],
+                  position["direction"], position["open_time"],
+                  position["open_price"], position["current_sl"],
+                  position["volume"], position["ticket"],
+                  "RECOVERED", int(time.time())))
+            self.conn.commit()
+            return trade_id
+        except Exception as e:
+            return None
+
+    def get_open_trades(self):
+        """Get all trades that haven't been closed yet."""
+        rows = self.conn.execute(
+            "SELECT id, vm_id, signal_id, symbol, direction, entry_time, entry_price, sl_price, lots, mt5_ticket "
+            "FROM trades WHERE exit_time IS NULL"
+        ).fetchall()
+        keys = ["trade_id", "vm_id", "signal_id", "symbol", "direction", "entry_time",
+                "entry_price", "sl_price", "lots", "mt5_ticket"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def find_deal_for_ticket(self, mt5_ticket, deals):
+        """Search a list of deals for close events matching a position ticket."""
+        for d in deals:
+            if d.get("position_id") == mt5_ticket:
+                return d
+        return None
 
     def snapshot_equity(self, vm_id, balance, equity):
         self.conn.execute(
@@ -455,7 +500,10 @@ class Mother:
             logger=self.log,
         )
         self.dedup.bind_sender(self.tg.dedup_dispatch)
-
+        # Recovery state
+        self._recovery_active = False
+        self._pending_vm_reports = {}   # vm_id → asyncio.Event, set when VM sends ACTUAL_STATE_REPORT
+        self._vm_reports = {}            # vm_id → last actual state report
         self.brain = None
         self.renko = None
         self.symbol = MT5_SRC_CFG["symbol"]
@@ -515,6 +563,28 @@ class Mother:
             logger=self.log,
         )
         self.validator.start()
+        # RECOVER from restart: check DB for still-open trades and mark them as stale
+        # Any trade with entry_time > 30 min ago and no exit_time is likely orphaned
+        try:
+            cutoff = int(time.time()) - 1800  # 30 min ago
+            stale_trades = self.db.conn.execute(
+                "SELECT id, vm_id, entry_time FROM trades "
+                "WHERE exit_time IS NULL AND entry_time < ?",
+                (cutoff,)
+            ).fetchall()
+            for row in stale_trades:
+                self.log.warning(f"Orphaned trade detected from previous session: "
+                                 f"{row[0][:12]} on {row[1]} (opened {(int(time.time())-row[2])/60:.0f} min ago)")
+                # Mark it as force-closed to prevent ghost updates
+                self.db.conn.execute(
+                    "UPDATE trades SET exit_time=?, exit_reason=?, realized_pnl=0 WHERE id=?",
+                    (int(time.time()), "orphaned_on_restart", row[0])
+                )
+            self.db.conn.commit()
+            if stale_trades:
+                self.log.info(f"Cleaned up {len(stale_trades)} orphaned trades from previous session")
+        except Exception as e:
+            self.log.error(f"Startup reconciliation failed: {e}")
 
     # ==============================================================
     # MT5 TICK SOURCE
@@ -738,7 +808,211 @@ class Mother:
                 )
         except Exception as e:
             self.log.error(f"validation ready handler: {e}")
+    # ==============================================================
+    # RECOVERY & RECONCILIATION
+    # ==============================================================
+    async def request_all_vm_states(self, timeout_sec=15):
+        """
+        Broadcast REPORT_ACTUAL_STATE to all connected VMs.
+        Wait up to timeout_sec for their responses.
+        Returns dict of {vm_id: state_report or None}
+        """
+        connected_vms = list(self.vm_connections.keys())
+        if not connected_vms:
+            self.log.info("No VMs connected, skipping actual state request")
+            return {}
 
+        # Reset pending events
+        self._pending_vm_reports = {vm: asyncio.Event() for vm in connected_vms}
+        self._vm_reports = {}
+
+        # Broadcast request
+        payload = {
+            "type": "REPORT_ACTUAL_STATE",
+            "timestamp_ms": int(time.time() * 1000),
+            "message_id": str(uuid.uuid4()),
+            "data": {},
+        }
+        text = json.dumps(payload)
+        for vm_id, ws in self.vm_connections.items():
+            try:
+                await ws.send_str(text)
+            except Exception as e:
+                self.log.warning(f"Couldn't request state from {vm_id}: {e}")
+
+        # Wait for all responses (or timeout)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[e.wait() for e in self._pending_vm_reports.values()]),
+                timeout=timeout_sec
+            )
+            self.log.info(f"All VMs reported actual state ({len(connected_vms)} VMs)")
+        except asyncio.TimeoutError:
+            missing = [vm for vm, ev in self._pending_vm_reports.items() if not ev.is_set()]
+            self.log.warning(f"Timeout waiting for state from {len(missing)} VMs: {missing}")
+
+        result = dict(self._vm_reports)
+        self._pending_vm_reports = {}
+        return result
+
+    async def reconcile_from_reports(self, vm_reports):
+        """
+        Given actual state reports from VMs, reconcile mother's DB.
+        Returns list of recovered positions (for brain state rebuild).
+        """
+        recovered_positions = []
+
+        # 1. For each VM's open positions, ensure they're in DB
+        for vm_id, report in vm_reports.items():
+            if report is None:
+                continue
+            for pos in report.get("open_positions", []):
+                # Check if this position is already tracked in DB
+                existing = self.db.conn.execute(
+                    "SELECT id FROM trades WHERE mt5_ticket=? AND vm_id=?",
+                    (pos["ticket"], vm_id)
+                ).fetchone()
+
+                if existing is None:
+                    # Not in DB — create recovered trade record
+                    trade_id = self.db.insert_recovered_trade(vm_id, pos)
+                    if trade_id:
+                        recovered_positions.append({
+                            "vm_id": vm_id,
+                            "trade_id": trade_id,
+                            "position": pos,
+                        })
+                        self.log.warning(f"[{vm_id}] Recovered orphaned position: "
+                                         f"ticket={pos['ticket']} dir={pos['direction']} "
+                                         f"open_price={pos['open_price']:.2f}")
+                else:
+                    # In DB — just verify status
+                    trade_id = existing[0]
+                    self.db.conn.execute(
+                        "UPDATE trades SET sl_price=? WHERE id=?",
+                        (pos["current_sl"], trade_id)
+                    )
+                    self.db.conn.commit()
+
+                # Update in-memory state
+                vm_state = self.state.vms.get(vm_id, {})
+                positions = vm_state.get("open_positions", {})
+                trade_id_final = existing[0] if existing else f"recovered_{pos['ticket']}"
+                positions[trade_id_final] = pos
+                self.state.upsert_vm(vm_id, open_positions=positions)
+
+        # 2. For each DB trade marked open, check if VM still has it
+        db_open_trades = self.db.get_open_trades()
+        for db_trade in db_open_trades:
+            vm_id = db_trade["vm_id"]
+            ticket = db_trade["mt5_ticket"]
+            if vm_id not in vm_reports or vm_reports[vm_id] is None:
+                continue  # VM offline, can't reconcile
+
+            vm_positions = vm_reports[vm_id].get("open_positions", [])
+            still_open = any(p["ticket"] == ticket for p in vm_positions)
+
+            if not still_open:
+                # Trade was closed while mother was down — find exit in deals
+                deals = vm_reports[vm_id].get("recent_deals", [])
+                exit_deal = self.db.find_deal_for_ticket(ticket, deals)
+                if exit_deal:
+                    self.db.update_trade_close(db_trade["trade_id"], {
+                        "exit_time": exit_deal["time"],
+                        "exit_price": exit_deal["price"],
+                        "exit_reason": "broker_closed_offline",
+                        "realized_pnl": exit_deal["profit"],
+                    })
+                    self.db.mark_recovered(db_trade["trade_id"], "RECONCILED_CLOSED")
+                    self.log.info(f"[{vm_id}] Reconciled offline close: "
+                                  f"trade={db_trade['trade_id'][:12]} "
+                                  f"exit_price={exit_deal['price']:.2f} pnl={exit_deal['profit']:.2f}")
+                else:
+                    # Can't find exit deal — mark as unknown_close
+                    self.db.update_trade_close(db_trade["trade_id"], {
+                        "exit_time": int(time.time()),
+                        "exit_price": 0,
+                        "exit_reason": "unknown_offline_close",
+                        "realized_pnl": 0,
+                    })
+                    self.db.mark_recovered(db_trade["trade_id"], "RECONCILED_UNKNOWN")
+                    self.log.warning(f"[{vm_id}] Trade {db_trade['trade_id'][:12]} closed but no deal found")
+
+        return recovered_positions
+
+    async def do_startup_recovery(self):
+        """
+        Full startup recovery sequence.
+        Waits for VMs to connect, asks for actual state, reconciles DB, rebuilds brain state.
+        """
+        self._recovery_active = True
+        wait_sec = SIGNAL_CFG.get("startup_recovery_wait_sec", 15)
+        self.log.info(f"Startup recovery: waiting {wait_sec}s for VMs to reconnect...")
+        await asyncio.sleep(wait_sec)
+
+        vm_reports = await self.request_all_vm_states(timeout_sec=10)
+        if not vm_reports:
+            self.log.info("No VM reports received — starting with fresh brain state")
+            self._recovery_active = False
+            return
+
+        recovered = await self.reconcile_from_reports(vm_reports)
+
+        if recovered:
+            # Rebuild brain from the FIRST recovered position (strategy is one-at-a-time)
+            first = recovered[0]
+            pos = first["position"]
+            self.brain.rebuild_state_from_position(
+                direction=pos["direction"],
+                entry_price=pos["open_price"],
+                entry_ts=pos["open_time"],
+                current_sl_price=pos["current_sl"],
+                signal_id=first["trade_id"],
+                be_triggered=False,  # Conservative — assume not yet triggered
+            )
+            self.log.info(f"Brain rebuilt from {len(recovered)} recovered position(s). "
+                          f"Managing signal {first['trade_id']}")
+            await self.tg.send_raw(
+                f"🔄 <b>Recovery complete</b>\n"
+                f"Rebuilt {len(recovered)} position(s) from broker state.\n"
+                f"Brain resumed managing signal {first['trade_id'][:16]}"
+            )
+        else:
+            self.log.info("Recovery complete — no open positions, starting fresh")
+
+        self._recovery_active = False
+
+    async def periodic_reconciliation(self):
+        """
+        Every N seconds, ask VMs for actual state and reconcile.
+        Catches drift from manual broker interactions, network issues, etc.
+        """
+        interval = SIGNAL_CFG.get("reconciliation_interval_sec", 60)
+        while self.running:
+            await asyncio.sleep(interval)
+            try:
+                if self._recovery_active:
+                    continue  # Don't step on startup recovery
+
+                vm_reports = await self.request_all_vm_states(timeout_sec=8)
+                if vm_reports:
+                    recovered = await self.reconcile_from_reports(vm_reports)
+                    if recovered:
+                        self.log.info(f"Periodic reconciliation recovered {len(recovered)} positions")
+                        # If brain thinks not in position but we found one, rebuild
+                        if not self.brain.in_position and recovered:
+                            first = recovered[0]
+                            pos = first["position"]
+                            self.brain.rebuild_state_from_position(
+                                direction=pos["direction"],
+                                entry_price=pos["open_price"],
+                                entry_ts=pos["open_time"],
+                                current_sl_price=pos["current_sl"],
+                                signal_id=first["trade_id"],
+                            )
+                            self.log.info(f"Brain rebuilt during periodic reconciliation")
+            except Exception as e:
+                self.log.error(f"periodic_reconciliation: {e}")
     # ==============================================================
     # VM WEBSOCKET
     # ==============================================================
@@ -858,13 +1132,41 @@ class Mother:
                 del positions[pos_id]
             self.state.upsert_vm(vm_id, open_positions=positions)
 
-            self.db.update_trade_close(pos_id, {
-                "exit_time": data.get("exit_time", int(time.time())),
-                "exit_price": data.get("exit_price", 0),
-                "exit_reason": data.get("exit_reason", "?"),
-                "realized_pnl": data.get("realized_pnl", 0),
-            })
-            await self.tg.trade_close(vm_id, data)
+            # Check if we actually know about this trade in DB
+            existing = self.db.conn.execute(
+                "SELECT id, exit_time FROM trades WHERE id=?", (pos_id,)
+            ).fetchone()
+
+            if existing is None:
+                # Unknown trade — VM had it open from before restart, we never tracked it
+                self.log.warning(f"[{vm_id}] POSITION_CLOSED for unknown trade {pos_id} "
+                                f"(from previous session?). Recording but skipping alerts.")
+                # Insert minimal record so DB is consistent
+                try:
+                    self.db.conn.execute("""
+                        INSERT INTO trades (id, vm_id, signal_id, direction, entry_time,
+                                            entry_price, exit_time, exit_price, exit_reason, realized_pnl)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (pos_id, vm_id, signal_id, 0, 0, 0,
+                        data.get("exit_time", int(time.time())),
+                        data.get("exit_price", 0), "orphaned_" + data.get("exit_reason", "?"),
+                        data.get("realized_pnl", 0)))
+                    self.db.conn.commit()
+                except Exception as e:
+                    self.log.error(f"insert orphaned trade: {e}")
+            elif existing[1] is not None:
+                # Already closed — VM re-sent (probably reconnect race)
+                self.log.info(f"[{vm_id}] duplicate close for {pos_id}, ignoring")
+                return
+            else:
+                # Normal path — real trade close
+                self.db.update_trade_close(pos_id, {
+                    "exit_time": data.get("exit_time", int(time.time())),
+                    "exit_price": data.get("exit_price", 0),
+                    "exit_reason": data.get("exit_reason", "?"),
+                    "realized_pnl": data.get("realized_pnl", 0),
+                })
+                await self.tg.trade_close(vm_id, data)
             self.db.insert_event(vm_id, "POSITION_CLOSED", "INFO", data)
             await self._broadcast_dashboard({
                 "type": "vm_event", "vm_id": vm_id, "event_type": "POSITION_CLOSED", "data": data,
@@ -936,6 +1238,12 @@ class Mother:
 
         elif mt == "VM_ONLINE":
             self.state.upsert_vm(vm_id, status="online", last_seen=int(time.time()))
+            
+        elif mt == "ACTUAL_STATE_REPORT":
+            self.log.info(f"[{vm_id}] ACTUAL_STATE_REPORT: {len(data.get('open_positions', []))} open positions")
+            self._vm_reports[vm_id] = data
+            if vm_id in self._pending_vm_reports:
+                self._pending_vm_reports[vm_id].set()
 
     # ==============================================================
     # DASHBOARD
@@ -1151,10 +1459,15 @@ class Mother:
 
         await self.warmup()
 
+        # Perform startup recovery BEFORE entering tick loop
+        # This waits for VMs and rebuilds brain state from any recovered positions
+        await self.do_startup_recovery()
+
         tasks = [
             asyncio.create_task(self.tick_loop()),
             asyncio.create_task(self.stale_monitor()),
             asyncio.create_task(self.dedup_cleanup_loop()),
+            asyncio.create_task(self.periodic_reconciliation()),
         ]
 
         try:

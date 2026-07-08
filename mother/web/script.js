@@ -1174,6 +1174,96 @@ function renderFleet() {
 }
 
 /* ============================================================
+   VALIDATION VIEW
+   ============================================================ */
+function renderValidation() {
+  const vms = Object.values(store.state.vms);
+  const allValidated = [];
+  for (const v of vms) {
+    for (const t of (v.trades || [])) {
+      if (t.validation_status) allValidated.push({ ...t, vm_id: v.vm_id });
+    }
+  }
+  allValidated.sort((a, b) => (b.entry_ts || 0) - (a.entry_ts || 0));
+
+  const total = allValidated.length;
+  const counts = allValidated.reduce((acc, t) => {
+    acc[t.validation_status] = (acc[t.validation_status] || 0) + 1;
+    return acc;
+  }, {});
+  const avgConf = total > 0 ? allValidated.reduce((s, t) => s + (t.validation_confidence || 0), 0) / total : 0;
+
+  const exactCt = counts["EXACT_MATCH"] || 0;
+  const minorCt = counts["MINOR_MISMATCH"] || 0;
+  const majorCt = (counts["MAJOR_MISMATCH"] || 0) + (counts["NO_SIGNAL"] || 0);
+  const noValCt = (counts["CANT_LOCATE"] || 0) + (counts["NO_VALIDATION"] || 0);
+
+  document.getElementById("main").innerHTML = `
+    <div class="page">
+      <div class="page-header">
+        <div>
+          <div class="page-title">Validation</div>
+          <div class="page-subtitle">Independent replay verification of every VM trade</div>
+        </div>
+      </div>
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Fleet Confidence</div>
+          <div class="kpi-value">${total > 0 ? avgConf.toFixed(1) + "%" : "—"}</div>
+          <div class="kpi-sub"><span>${total} validated</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Exact Match</div>
+          <div class="kpi-value pos">${exactCt}</div>
+          <div class="kpi-sub"><span>${total > 0 ? (exactCt / total * 100).toFixed(1) + "%" : "—"}</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Minor Mismatch</div>
+          <div class="kpi-value">${minorCt}</div>
+          <div class="kpi-sub"><span>tolerated</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Major / Issues</div>
+          <div class="kpi-value neg">${majorCt}</div>
+          <div class="kpi-sub"><span>investigate</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Recent Validations</div>
+          <div class="card-subtitle">Last ${Math.min(200, total)} · click for details</div>
+        </div>
+        <div class="list-compact">
+          ${total === 0 ? emptyState("No validations yet", "Trades will be validated automatically as they close") :
+            allValidated.slice(0, 200).map(t => {
+              const dir = t.direction === 1 ? "LONG" : "SHORT";
+              const isWin = (t.realized_pnl || 0) > 0;
+              const dateStr = t.entry_ts ? new Date(t.entry_ts * 1000).toISOString().replace("T", " ").slice(0, 16) : "—";
+              const shortStatus = t.validation_status ? t.validation_status.split("_")[0] : "?";
+              return `
+                <div class="trade-row" data-tid="${escapeHtml(t.trade_id)}" data-vm="${escapeHtml(t.vm_id)}">
+                  <div class="trade-id">#${String(t.trade_id).slice(0, 8)}</div>
+                  <div class="badge ${t.validation_status}">${shortStatus}</div>
+                  <div class="dir-arrow ${dir}">${dir === 'LONG' ? '▲' : '▼'}</div>
+                  <div class="trade-time">${dateStr} · ${escapeHtml(t.vm_id)}</div>
+                  <div></div>
+                  <div class="trade-price">conf ${(t.validation_confidence || 0).toFixed(0)}%</div>
+                  <div class="trade-pnl ${pnlClass(t.realized_pnl)}">${t.realized_pnl != null ? pnlSign(t.realized_pnl) + fmt$(t.realized_pnl) : "—"}</div>
+                </div>
+              `;
+            }).join("")
+          }
+        </div>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll(".trade-row[data-tid]").forEach(row => {
+    row.addEventListener("click", () => focusTrade(row.dataset.vm, row.dataset.tid));
+  });
+}
+
+/* ============================================================
    LOGS
    ============================================================ */
 function renderLogs() {
@@ -1526,6 +1616,16 @@ function openDetail(trade, vm) {
       <div class="detail-row"><span class="k">MT5 Ticket</span><span class="v">${trade.mt5_ticket || '?'}</span></div>
       ${trade.exit_reason ? `<div class="detail-row"><span class="k">Exit Reason</span><span class="v">${escapeHtml(trade.exit_reason)}</span></div>` : ''}
     </div>
+    ${trade.validation_status ? `
+      <div class="detail-section">
+        <div class="detail-section-title">Validation</div>
+        <div class="detail-row"><span class="k">Status</span><span class="v"><span class="badge ${trade.validation_status}">${trade.validation_status}</span></span></div>
+        <div class="detail-row"><span class="k">Confidence</span><span class="v">${(trade.validation_confidence || 0).toFixed(1)}%</span></div>
+        ${trade.validation_details && trade.validation_details.checks ? Object.entries(trade.validation_details.checks).map(([k, ok]) => `
+          <div class="detail-row"><span class="k">${escapeHtml(k)}</span><span class="v ${ok ? 'pos' : 'neg'}">${ok ? '✓' : '✗'}</span></div>
+        `).join("") : ""}
+      </div>
+    ` : ""}
   `;
   panel.classList.add("open");
   panel.setAttribute("aria-hidden", "false");
@@ -1545,6 +1645,7 @@ const cmdkCommands = [
   { label: "Go to Trades", route: "trades", hint: "3" },
   { label: "Go to Stats", route: "stats", hint: "4" },
   { label: "Go to Fleet", route: "fleet", hint: "5" },
+  { label: "Go to Validation", route: "validation", hint: "6" },
   { label: "Go to Logs", route: "logs", hint: "7" },
   { label: "Go to Config", route: "config", hint: "8", requiresUnlock: true },
   { label: "Cycle Theme", action: cycleTheme, hint: "T" },
@@ -1650,7 +1751,7 @@ function renderCurrentRoute() {
     try { charts.equity.destroy(); } catch {}
     charts.equity = null;
   }
-  const routes = { overview: renderOverview, live: renderLive, trades: renderTrades, stats: renderStats, fleet: renderFleet, logs: renderLogs, config: renderConfig };
+  const routes = { overview: renderOverview, live: renderLive, trades: renderTrades, stats: renderStats, fleet: renderFleet, validation: renderValidation, logs: renderLogs, config: renderConfig };
   (routes[route] || renderOverview)();
   if (!UNLOCK.unlocked) hideConfigNav();
 }
@@ -1680,7 +1781,7 @@ function init() {
       return;
     }
     if (e.target.tagName === "INPUT") return;
-    const routeMap = { "1": "overview", "2": "live", "3": "trades", "4": "stats", "5": "fleet", "7": "logs", "8": "config" };
+    const routeMap = { "1": "overview", "2": "live", "3": "trades", "4": "stats", "5": "fleet", "6": "validation", "7": "logs", "8": "config" };
     if (routeMap[e.key]) {
       if (routeMap[e.key] === "config" && !UNLOCK.unlocked) return;
       navigate(routeMap[e.key]);

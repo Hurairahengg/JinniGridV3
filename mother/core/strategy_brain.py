@@ -489,6 +489,52 @@ class StrategyBrain:
         self.be_triggered = False
         self.fav_bricks_count = 0
         self.current_signal_id = None
+    def rebuild_state_from_position(self, direction, entry_price, entry_ts,
+                                     current_sl_price, signal_id, be_triggered=False):
+        """
+        Rebuild brain state from a recovered position.
+        Called during startup recovery when VMs have open positions from before restart.
+
+        After calling, brain will manage this position going forward (SL updates, exit checks).
+        """
+        self.in_position = True
+        self.trade_direction = direction
+        self.entry_price = entry_price
+        self.entry_ts = entry_ts
+        self.current_sl_price = current_sl_price
+        self.initial_sl_price = current_sl_price  # We don't know original, use current as reference
+        self.be_triggered = be_triggered
+        self.fav_bricks_count = 0
+        self.current_signal_id = signal_id
+
+        # Since the position is already open, this direction can't fire again
+        if direction == 1:
+            self.long_armed = False
+        else:
+            self.short_armed = False
+
+        # Estimate entry brick index — use current bar count as approximation
+        # (won't be perfect but timeout check will still work approximately)
+        self.entry_brick_index_abs = self.abs_start_index + len(self.bars) - 1
+
+        if self.log:
+            self.log.info(f"Brain rebuilt from position: dir={direction} entry={entry_price:.2f} "
+                          f"SL={current_sl_price:.2f} signal_id={signal_id}")
+
+    def reset_state(self):
+        """Full reset — used when confirmed all positions are closed."""
+        self.in_position = False
+        self.trade_direction = 0
+        self.entry_price = 0.0
+        self.entry_brick_index_abs = -1
+        self.entry_ts = 0
+        self.current_sl_price = 0.0
+        self.initial_sl_price = 0.0
+        self.be_triggered = False
+        self.fav_bricks_count = 0
+        self.current_signal_id = None
+        self.long_armed = True
+        self.short_armed = True
 
     def get_state(self):
         """For dashboard/diagnostics."""

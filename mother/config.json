@@ -22,7 +22,9 @@
     "position_poll_interval_ms": 5000,
     "heartbeat_interval_ms": 5000,
     "vm_stale_after_sec": 30,
-    "vm_offline_after_sec": 120
+    "vm_offline_after_sec": 120,
+    "startup_recovery_wait_sec": 15,
+    "reconciliation_interval_sec": 60
   },
 
   "telegram": {

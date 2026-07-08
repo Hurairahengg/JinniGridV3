@@ -35,16 +35,10 @@ def get_tick(symbol):
     return mt5.symbol_info_tick(symbol)
 
 
-def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
+def open_position(symbol, direction, lots, sl_distance_pts, signal_id="", magic=MAGIC_NUMBER):
     """
     Open market position at broker's current bid/ask.
-    SL is placed at (fill_price - sl_distance) for LONG, (fill_price + sl_distance) for SHORT.
-
-    Returns:
-      (True, {"ticket": int, "fill_price": float, "sl_price": float,
-              "actual_lots": float, "slippage_pts": float})
-      OR
-      (False, {"error_code": int, "error_message": str, "retcode": int})
+    Comment field is tagged with signal_id for recovery linkage.
     """
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
@@ -59,7 +53,6 @@ def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
         sl_price = round(entry_price + sl_distance_pts, 5)
         order_type = mt5.ORDER_TYPE_SELL
 
-    # Verify SL respects broker's minimum stop distance
     info = mt5.symbol_info(symbol)
     if info is not None and info.trade_stops_level > 0:
         min_stop_pts = info.trade_stops_level * info.point
@@ -71,6 +64,13 @@ def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
                 "broker_min": min_stop_pts,
             }
 
+    # Tag comment with signal_id for recovery linkage
+    # MT5 comments are max ~31 chars
+    if signal_id:
+        comment = f"jg:{signal_id[:24]}"
+    else:
+        comment = "JinniGrid V4"
+
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -81,7 +81,7 @@ def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
         "tp": 0.0,
         "deviation": DEVIATION,
         "magic": magic,
-        "comment": "JinniGrid V3",
+        "comment": comment,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
@@ -108,6 +108,7 @@ def open_position(symbol, direction, lots, sl_distance_pts, magic=MAGIC_NUMBER):
         "actual_lots": float(result.volume),
         "slippage_pts": slippage,
     }
+
 
 
 def modify_sl(symbol, ticket, new_sl_price):
@@ -215,7 +216,7 @@ def close_position(symbol, ticket):
 def get_open_positions(magic=MAGIC_NUMBER, symbol=None):
     """
     Query open positions from MT5.
-    Returns list of dicts with position info.
+    Extracts signal_id from comment field if tagged with "jg:" prefix.
     """
     if symbol:
         positions = mt5.positions_get(symbol=symbol)
@@ -229,6 +230,10 @@ def get_open_positions(magic=MAGIC_NUMBER, symbol=None):
     for p in positions:
         if p.magic != magic:
             continue
+        # Extract signal_id from comment if present
+        signal_id = None
+        if p.comment and p.comment.startswith("jg:"):
+            signal_id = p.comment[3:]
         result.append({
             "ticket": int(p.ticket),
             "symbol": p.symbol,
@@ -240,9 +245,9 @@ def get_open_positions(magic=MAGIC_NUMBER, symbol=None):
             "unrealized_pnl": float(p.profit),
             "open_time": int(p.time),
             "comment": p.comment,
+            "signal_id": signal_id,
         })
     return result
-
 
 def get_recent_deals(from_ts, magic=MAGIC_NUMBER):
     """

@@ -337,7 +337,7 @@ class VMEngine:
         lots = max(min_lot, min(max_lot, lots))
 
         # Execute
-        ok, result = executor.open_position(symbol, direction, lots, sl_distance)
+        ok, result = executor.open_position(symbol, direction, lots, sl_distance, signal_id=signal_id)
 
         if not ok:
             self.log.error(f"open_position failed: {result}")
@@ -713,10 +713,32 @@ class VMEngine:
                         "exit_reason": "manual_close_all",
                     })
 
-        elif mt == "SHUTDOWN":
-            self.log.info("Shutdown requested by mother")
-            self.running = False
+        elif mt == "REPORT_ACTUAL_STATE":
+            # Mother wants raw truth from our MT5
+            await self._report_actual_state()
+    async def _report_actual_state(self):
+        """
+        Query MT5 for open positions AND recent deal history.
+        Send back to mother for reconciliation.
+        """
+        try:
+            open_positions = executor.get_open_positions(symbol=self.symbol)
+            # Last 24h of deals for closed-trade reconciliation
+            from_ts = int(time.time()) - 86400
+            recent_deals = executor.get_recent_deals(from_ts)
 
+            await self.send_msg("ACTUAL_STATE_REPORT", {
+                "reported_at_ms": int(time.time() * 1000),
+                "open_positions": open_positions,
+                "recent_deals": recent_deals,
+                "mt5_ok": self.mt5_ok,
+                "account_balance": self.account_balance(),
+                "account_equity": self.account_equity(),
+            })
+            self.log.info(f"Sent actual state: {len(open_positions)} open positions, {len(recent_deals)} deals")
+        except Exception as e:
+            self.log.error(f"_report_actual_state failed: {e}")
+            await self.send_error("REPORT_STATE_FAILED", str(e))
     # ==============================================================
     # MAIN
     # ==============================================================

@@ -2252,3 +2252,213 @@ img, svg { display: block; max-width: 100%; }
   cursor: not-allowed;
   pointer-events: none;
 }
+
+/* ============================================================
+   UNLOCK MODAL
+   ============================================================ */
+.unlock-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.unlock-modal-overlay.open {
+  opacity: 1;
+}
+
+.unlock-modal-box {
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 28px;
+  min-width: 340px;
+  max-width: 400px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  transform: scale(0.95);
+  transition: transform 320ms cubic-bezier(0.5, 1.5, 0.5, 1);
+}
+
+.unlock-modal-overlay.open .unlock-modal-box {
+  transform: scale(1);
+}
+
+.unlock-modal-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.unlock-modal-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.unlock-modal-input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 20px;
+  outline: none;
+  transition: all 200ms ease;
+  letter-spacing: 4px;
+}
+
+.unlock-modal-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  background: var(--bg-3);
+}
+
+.unlock-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.unlock-modal-actions .btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-sans);
+  transition: all 200ms ease;
+}
+
+.unlock-modal-actions .btn:hover {
+  background: var(--bg-3);
+  transform: translateY(-1px);
+}
+
+.unlock-modal-actions .btn.primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.unlock-modal-actions .btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+/* ============================================================
+   UNLOCK MODAL
+   ============================================================ */
+.unlock-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.unlock-modal-overlay.open { opacity: 1; }
+
+.unlock-modal-box {
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 28px;
+  min-width: 340px;
+  max-width: 400px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+  transform: scale(0.95);
+  transition: transform 320ms cubic-bezier(0.5, 1.5, 0.5, 1);
+}
+
+.unlock-modal-overlay.open .unlock-modal-box { transform: scale(1); }
+
+.unlock-modal-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.unlock-modal-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.unlock-modal-input {
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 20px;
+  outline: none;
+  transition: all 200ms ease;
+  letter-spacing: 4px;
+}
+
+.unlock-modal-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+  background: var(--bg-3);
+}
+
+.unlock-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.unlock-modal-actions .btn {
+  padding: 8px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+  font-family: var(--font-sans);
+  transition: all 200ms ease;
+}
+
+.unlock-modal-actions .btn:hover {
+  background: var(--bg-3);
+  transform: translateY(-1px);
+}
+
+.unlock-modal-actions .btn.primary {
+  background: var(--accent);
+  color: var(--bg-0);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.unlock-modal-actions .btn.primary:hover {
+  background: var(--accent-hover);
+}
