@@ -197,6 +197,7 @@ const store = {
     tradeTimeframe: "all",
     equityTimeframe: "all",
     logFilter: {vm: "all", severity: "all", type: "all"},
+    calendarMonth: null,
   },
   listeners: new Set(),
   set(patch) {
@@ -641,13 +642,12 @@ function renderEquityChart() {
   const container = document.getElementById("equity-chart-container");
   if (!container) return;
 
-  // Destroy old chart
   if (charts.equity) {
     try { charts.equity.destroy(); } catch {}
     charts.equity = null;
   }
 
-  // Build cumulative equity curve from all trades sorted by exit_ts
+  // Build cumulative equity from ALL closed trades across all VMs
   const allTrades = getAllTrades()
     .filter(t => t.exit_ts && t.realized_pnl != null)
     .sort((a, b) => (a.exit_ts || 0) - (b.exit_ts || 0));
@@ -672,19 +672,18 @@ function renderEquityChart() {
     return;
   }
 
+  // Build by-trade equity curve (X = trade #, Y = cumulative)
   let cum = 0;
-  const points = filtered.map(t => {
+  const points = filtered.map((t, i) => {
     cum += t.realized_pnl || 0;
-    return { x: t.exit_ts * 1000, y: parseFloat(cum.toFixed(2)) };
+    return { x: i + 1, y: parseFloat(cum.toFixed(2)) };
   });
 
   const isPositive = cum >= 0;
-  const accent = getCSSVar("--accent");
   const green = getCSSVar("--green");
   const red = getCSSVar("--red");
   const textDim = getCSSVar("--text-dim");
   const border = getCSSVar("--border");
-  const bg1 = getCSSVar("--bg-1");
 
   const options = {
     chart: {
@@ -696,7 +695,7 @@ function renderEquityChart() {
         show: true,
         tools: { download: false, selection: false, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true }
       },
-      animations: { enabled: true, easing: 'easeout', speed: 400 },
+      animations: { enabled: true, speed: 400 },
       zoom: { enabled: true, type: 'x' },
     },
     series: [{ name: 'Cumulative PnL', data: points }],
@@ -708,16 +707,16 @@ function renderEquityChart() {
         type: 'vertical',
         shadeIntensity: 0.5,
         gradientToColors: [isPositive ? green : red],
-        inverseColors: false,
         opacityFrom: 0.4,
         opacityTo: 0.05,
         stops: [0, 100],
       }
     },
     dataLabels: { enabled: false },
-    grid: { borderColor: border, strokeDashArray: 3, xaxis: { lines: { show: true } }, yaxis: { lines: { show: true } } },
+    grid: { borderColor: border, strokeDashArray: 3 },
     xaxis: {
-      type: 'datetime',
+      type: 'numeric',
+      title: { text: 'Trade #', style: { color: textDim, fontSize: '10px' } },
       labels: { style: { colors: textDim, fontSize: '11px' } },
       axisBorder: { color: border },
       axisTicks: { color: border },
@@ -730,7 +729,7 @@ function renderEquityChart() {
     },
     tooltip: {
       theme: 'dark',
-      x: { format: 'yyyy-MM-dd HH:mm' },
+      x: { formatter: (v) => "Trade #" + v },
       y: { formatter: (v) => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) },
     },
     markers: { size: 0, hover: { size: 6 } },
@@ -1020,7 +1019,8 @@ function vmSelectorHTML(currentVm) {
   if (vms.length === 0) return "";
   return `
     <select class="config-select" id="vm-selector" style="min-width:180px;">
-      <option value="">— Select VM —</option>
+      <option value="__all__" ${currentVm === "__all__" ? 'selected' : ''}>🌐 All VMs Combined</option>
+      <option value="" disabled>—————</option>
       ${vms.map(v => `
         <option value="${escapeHtml(v.vm_id)}" ${v.vm_id === currentVm ? 'selected' : ''}>
           ${escapeHtml(v.vm_id)} · ${escapeHtml(v.status || 'unknown')}
@@ -1035,7 +1035,11 @@ function bindVmSelector(routeName) {
     if (!vid) return;
     store.set({ selectedVm: vid });
     if (routeName === "config") { configOriginal = null; configDraft = null; }
-    navigate(routeName + "/" + vid);
+    if (vid === "__all__") {
+      navigate(routeName);
+    } else {
+      navigate(routeName + "/" + vid);
+    }
   });
 }
 
@@ -1048,11 +1052,30 @@ function renderStats() {
     document.getElementById("main").innerHTML = `<div class="page">${emptyState("No VMs", "Waiting")}</div>`;
     return;
   }
-  if (!store.state.selectedVm) store.state.selectedVm = vms[0].vm_id;
-  const vm = store.state.vms[store.state.selectedVm];
-  if (!vm) return;
+  if (!store.state.selectedVm) store.state.selectedVm = "__all__";
 
-  const trades = (vm.trades || []).filter(t => t.exit_ts).sort((a, b) => (a.exit_ts || 0) - (b.exit_ts || 0));
+  // Aggregate mode when "All VMs Combined" selected
+  const isAllMode = store.state.selectedVm === "__all__";
+  let vm, trades, displayName, balance;
+
+  if (isAllMode) {
+    displayName = "🌐 All VMs Combined";
+    balance = vms.reduce((s, v) => s + (v.balance || 0), 0);
+    trades = [];
+    for (const v of vms) {
+      for (const t of (v.trades || [])) {
+        if (t.exit_ts) trades.push({ ...t, vm_id: v.vm_id });
+      }
+    }
+    trades.sort((a, b) => (a.exit_ts || 0) - (b.exit_ts || 0));
+    vm = { vm_id: "__all__", status: "combined", balance: balance, trades: trades };
+  } else {
+    vm = store.state.vms[store.state.selectedVm];
+    if (!vm) return;
+    displayName = vm.vm_id;
+    balance = vm.balance || 0;
+    trades = (vm.trades || []).filter(t => t.exit_ts).sort((a, b) => (a.exit_ts || 0) - (b.exit_ts || 0));
+  }
   const wins = trades.filter(t => (t.realized_pnl || 0) > 0);
   const losses = trades.filter(t => (t.realized_pnl || 0) <= 0);
   const wr = trades.length > 0 ? (wins.length / trades.length * 100) : 0;
@@ -1137,7 +1160,7 @@ function renderStats() {
       <div class="page-header">
         <div>
           <div class="page-title">Portfolio</div>
-          <div class="page-subtitle">${escapeHtml(vm.vm_id)} · deep dive</div>
+          <div class="page-subtitle">${escapeHtml(displayName)} · ${trades.length} trades</div>
         </div>
         <div>${vmSelectorHTML(store.state.selectedVm)}</div>
       </div>
@@ -1249,29 +1272,37 @@ function renderStats() {
 
       <div class="card" style="margin-top: var(--space-4);">
         <div class="card-header">
-          <div class="card-title">Trading by Day of Week</div>
+          <div>
+            <div class="card-title">Trading Calendar</div>
+            <div class="card-subtitle">Click any day to see stats</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="icon-btn" id="cal-prev" title="Previous month">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="15 18 9 12 15 6"/></svg>
+            </button>
+            <div id="cal-month-label" style="min-width: 140px; text-align: center; font-family: var(--font-mono); font-size: 13px; font-weight: 600;"></div>
+            <button class="icon-btn" id="cal-next" title="Next month">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+            <button class="btn" id="cal-today" style="padding: 5px 12px; font-size: 11px; margin-left: 8px;">Today</button>
+          </div>
         </div>
         <div class="card-body">
-          <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; padding: 8px;">
-            ${dayNames.map((name, i) => {
-              const [tot, w] = dayStats[i];
-              const dayWr = tot > 0 ? (w / tot * 100) : 0;
-              const active = i >= 1 && i <= 5;
-              return `
-                <div style="background: ${active ? 'var(--bg-2)' : 'var(--bg-3)'}; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid var(--border);">
-                  <div style="font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 1px;">${name}</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 6px; color: var(--text);">${tot}</div>
-                  <div style="font-size: 11px; color: ${dayWr >= 50 ? 'var(--green)' : dayWr > 0 ? 'var(--yellow)' : 'var(--text-muted)'}; margin-top: 2px;">${tot > 0 ? dayWr.toFixed(0) + "%" : "—"}</div>
-                </div>
-              `;
-            }).join("")}
-          </div>
+          <div id="trading-calendar"></div>
+          <div id="calendar-day-detail" style="display: none; margin-top: 20px; padding: 20px; background: var(--bg-2); border-radius: 10px; border: 1px solid var(--border);"></div>
         </div>
       </div>
     </div>
   `;
 
   bindVmSelector("stats");
+
+  // Init calendar state on first render
+  if (!store.state.calendarMonth) {
+    const now = new Date();
+    store.state.calendarMonth = { year: now.getUTCFullYear(), month: now.getUTCMonth() };
+  }
+  renderTradingCalendar(trades);
 
   // Render charts
   setTimeout(() => {
@@ -1438,6 +1469,202 @@ function renderPortfolioDirChart(longs, shorts) {
   });
   chart.render();
 }
+
+/* ============================================================
+   TRADING CALENDAR
+   ============================================================ */
+function renderTradingCalendar(trades) {
+  const { year, month } = store.state.calendarMonth;
+  const monthNames = ["January", "February", "March", "April", "May", "June",
+                       "July", "August", "September", "October", "November", "December"];
+  const label = document.getElementById("cal-month-label");
+  if (label) label.textContent = `${monthNames[month]} ${year}`;
+
+  // Group trades by date (YYYY-MM-DD in UTC)
+  const dayMap = {};
+  for (const t of trades) {
+    if (!t.exit_ts) continue;
+    const d = new Date(t.exit_ts * 1000);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+    if (!dayMap[key]) dayMap[key] = [];
+    dayMap[key].push(t);
+  }
+
+  // Calendar structure
+  const firstDay = new Date(Date.UTC(year, month, 1));
+  const lastDay = new Date(Date.UTC(year, month + 1, 0));
+  const daysInMonth = lastDay.getUTCDate();
+  const startWeekday = firstDay.getUTCDay(); // 0=Sun
+
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const today = new Date();
+  const todayKey = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, "0")}-${String(today.getUTCDate()).padStart(2, "0")}`;
+
+  let html = `
+    <div class="cal-grid">
+      ${dayNames.map(n => `<div class="cal-header-cell">${n}</div>`).join("")}
+      ${Array(startWeekday).fill(0).map(() => `<div class="cal-cell cal-empty"></div>`).join("")}
+  `;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const dayTrades = dayMap[key] || [];
+    const dayPnl = dayTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+    const hasTrades = dayTrades.length > 0;
+    const isToday = key === todayKey;
+    const pnlColor = dayPnl > 0 ? "var(--green)" : dayPnl < 0 ? "var(--red)" : "var(--text-dim)";
+    const bgIntensity = Math.min(Math.abs(dayPnl) / 200, 0.5);
+    const bgColor = dayPnl > 0
+      ? `rgba(74, 222, 128, ${bgIntensity})`
+      : dayPnl < 0
+        ? `rgba(248, 113, 113, ${bgIntensity})`
+        : "var(--bg-2)";
+
+    html += `
+      <div class="cal-cell ${hasTrades ? 'cal-has-trades' : ''} ${isToday ? 'cal-today' : ''}"
+           data-day-key="${key}"
+           style="background: ${bgColor};">
+        <div class="cal-date">${d}</div>
+        ${hasTrades ? `
+          <div class="cal-pnl" style="color: ${pnlColor};">${pnlSign(dayPnl)}${fmt$(dayPnl, 0)}</div>
+          <div class="cal-count">${dayTrades.length}t</div>
+        ` : `<div class="cal-empty-cell">—</div>`}
+      </div>
+    `;
+  }
+
+  html += `</div>`;
+  document.getElementById("trading-calendar").innerHTML = html;
+
+  // Bind clicks
+  document.querySelectorAll(".cal-cell[data-day-key]").forEach(cell => {
+    cell.addEventListener("click", () => {
+      const key = cell.dataset.dayKey;
+      const dayTrades = dayMap[key] || [];
+      renderCalendarDayDetail(key, dayTrades);
+    });
+  });
+
+  // Bind nav buttons
+  document.getElementById("cal-prev")?.addEventListener("click", () => {
+    let { year, month } = store.state.calendarMonth;
+    month--;
+    if (month < 0) { month = 11; year--; }
+    store.set({ calendarMonth: { year, month } });
+    renderTradingCalendar(trades);
+    hideCalendarDetail();
+  });
+  document.getElementById("cal-next")?.addEventListener("click", () => {
+    let { year, month } = store.state.calendarMonth;
+    month++;
+    if (month > 11) { month = 0; year++; }
+    store.set({ calendarMonth: { year, month } });
+    renderTradingCalendar(trades);
+    hideCalendarDetail();
+  });
+  document.getElementById("cal-today")?.addEventListener("click", () => {
+    const now = new Date();
+    store.set({ calendarMonth: { year: now.getUTCFullYear(), month: now.getUTCMonth() } });
+    renderTradingCalendar(trades);
+    hideCalendarDetail();
+  });
+}
+
+function renderCalendarDayDetail(dayKey, dayTrades) {
+  const detailEl = document.getElementById("calendar-day-detail");
+  if (!detailEl) return;
+
+  if (dayTrades.length === 0) {
+    detailEl.innerHTML = `
+      <div style="text-align: center; color: var(--text-muted); padding: 20px; font-family: var(--font-mono); font-size: 12px;">
+        No trades on ${dayKey}
+      </div>
+    `;
+    detailEl.style.display = "block";
+    return;
+  }
+
+  const wins = dayTrades.filter(t => (t.realized_pnl || 0) > 0);
+  const losses = dayTrades.filter(t => (t.realized_pnl || 0) <= 0);
+  const net = dayTrades.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+  const wr = (wins.length / dayTrades.length * 100);
+  const bestTrade = Math.max(...dayTrades.map(t => t.realized_pnl || 0));
+  const worstTrade = Math.min(...dayTrades.map(t => t.realized_pnl || 0));
+  const gross_w = wins.reduce((s, t) => s + t.realized_pnl, 0);
+  const gross_l = losses.reduce((s, t) => s + (t.realized_pnl || 0), 0);
+  const pf = gross_l < 0 ? (gross_w / Math.abs(gross_l)) : (gross_w > 0 ? Infinity : 0);
+  const longs = dayTrades.filter(t => t.direction === 1);
+  const shorts = dayTrades.filter(t => t.direction === -1);
+
+  detailEl.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+      <div>
+        <div style="font-size: 15px; font-weight: 700; color: var(--text);">${dayKey}</div>
+        <div style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);">${new Date(dayKey + "T00:00:00Z").toUTCString().split(" ").slice(0, 4).join(" ")}</div>
+      </div>
+      <button class="btn" id="cal-detail-close" style="padding: 4px 12px; font-size: 11px;">Close</button>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 16px;">
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Trades</div>
+        <div class="cal-stat-value">${dayTrades.length}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Net PnL</div>
+        <div class="cal-stat-value ${pnlClass(net)}">${pnlSign(net)}${fmt$(net)}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Win Rate</div>
+        <div class="cal-stat-value">${wr.toFixed(0)}%</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Profit Factor</div>
+        <div class="cal-stat-value">${isFinite(pf) && pf > 0 ? pf.toFixed(2) : "—"}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Wins</div>
+        <div class="cal-stat-value pos">${wins.length}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Losses</div>
+        <div class="cal-stat-value neg">${losses.length}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Best</div>
+        <div class="cal-stat-value pos">${fmt$(bestTrade)}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Worst</div>
+        <div class="cal-stat-value neg">${fmt$(worstTrade)}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Longs</div>
+        <div class="cal-stat-value">${longs.length}</div>
+      </div>
+      <div class="cal-stat-box">
+        <div class="cal-stat-label">Shorts</div>
+        <div class="cal-stat-value">${shorts.length}</div>
+      </div>
+    </div>
+
+    <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-1);">
+      ${dayTrades.sort((a, b) => (b.entry_ts || 0) - (a.entry_ts || 0)).map(t => tradeRowHTML(t, true)).join("")}
+    </div>
+  `;
+  detailEl.style.display = "block";
+
+  document.getElementById("cal-detail-close")?.addEventListener("click", hideCalendarDetail);
+  detailEl.querySelectorAll(".trade-row[data-tid]").forEach(row => {
+    row.addEventListener("click", () => focusTrade(row.dataset.vm, row.dataset.tid));
+  });
+}
+
+function hideCalendarDetail() {
+  const el = document.getElementById("calendar-day-detail");
+  if (el) el.style.display = "none";
+}
+
 /* ============================================================
    FLEET (cards per VM)
    ============================================================ */
@@ -1768,7 +1995,9 @@ function renderConfig() {
     document.getElementById("main").innerHTML = `<div class="page">${emptyState("No VMs", "Wait for VM")}</div>`;
     return;
   }
-  if (!store.state.selectedVm) store.state.selectedVm = vms[0].vm_id;
+  if (!store.state.selectedVm || store.state.selectedVm === "__all__") {
+    store.state.selectedVm = vms[0].vm_id;
+  }
   const vm = store.state.vms[store.state.selectedVm];
   if (!vm) return;
 

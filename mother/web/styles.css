@@ -2477,3 +2477,143 @@ img, svg { display: block; max-width: 100%; }
   background: var(--red);
   color: var(--bg-0);
 }
+
+/* ============================================================
+   TRADING CALENDAR
+   ============================================================ */
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cal-header-cell {
+  padding: 8px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-weight: 600;
+}
+
+.cal-cell {
+  aspect-ratio: 1 / 0.85;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  transition: all 150ms ease;
+  min-height: 60px;
+}
+
+.cal-cell:not(.cal-empty):hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.cal-cell.cal-empty {
+  cursor: default;
+  background: transparent;
+  border: 1px dashed var(--border);
+  opacity: 0.3;
+}
+
+.cal-cell.cal-today {
+  border-color: var(--accent);
+  border-width: 2px;
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.cal-cell.cal-has-trades {
+  cursor: pointer;
+}
+
+.cal-date {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.cal-pnl {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.cal-count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
+.cal-empty-cell {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.4;
+  margin-top: auto;
+  margin-bottom: auto;
+  text-align: center;
+}
+
+.cal-stat-box {
+  background: var(--bg-1);
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  text-align: center;
+}
+
+.cal-stat-label {
+  font-size: 9px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.cal-stat-value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cal-stat-value.pos { color: var(--green); }
+.cal-stat-value.neg { color: var(--red); }
+
+/* Calendar mobile */
+  .cal-cell {
+    min-height: 44px;
+    padding: 3px 4px;
+  }
+  .cal-date { font-size: 10px; }
+  .cal-pnl { font-size: 9px; margin-top: 2px; }
+  .cal-count { font-size: 8px; }
+  .cal-header-cell {
+    padding: 4px 0;
+    font-size: 9px;
+    letter-spacing: 0.5px;
+  }
+  .cal-stat-box { padding: 8px 6px; }
+  .cal-stat-label { font-size: 8px; }
+  .cal-stat-value { font-size: 12px; }
+
+  #cal-month-label { min-width: 100px !important; font-size: 11px !important; }
+  #cal-today { font-size: 10px !important; padding: 4px 8px !important; }
+
+  /* Card header stacks vertically on mobile */
+  .card-header {
+    align-items: stretch !important;
+  }
