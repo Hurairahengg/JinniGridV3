@@ -181,6 +181,10 @@ class VMEngine:
         # Outbound queue — NEVER blocks strategy handling
         self._outbound_queue = asyncio.Queue(maxsize=1000)
 
+        # Tickets we are actively closing ourselves — poller must NOT
+        # mislabel these as external_close (fixes the race).
+        self._closing_tickets = set()
+
     # ==============================================================
     # CONFIG
     # ==============================================================
@@ -473,8 +477,10 @@ class VMEngine:
             self.log.debug(f"CLOSE for unknown signal {signal_id}")
             return
 
+        self._closing_tickets.add(target["mt5_ticket"])
         ok, result = executor.close_position(target["symbol"], target["mt5_ticket"])
         if not ok:
+            self._closing_tickets.discard(target["mt5_ticket"])
             self.log.error(f"close_position failed: {result}")
             await self.send_error("CLOSE_FAILED", result.get("error_message", "?"),
                                     {"signal_id": signal_id})
@@ -501,6 +507,7 @@ class VMEngine:
             "realized_pnl": realized_pnl,
             "exit_reason": reason,
         })
+        self._closing_tickets.discard(target["mt5_ticket"])
 
     # ==============================================================
     # POSITION POLLING (source of truth for state sync)
@@ -526,42 +533,58 @@ class VMEngine:
                         mp = mt5_tickets[ticket]
                         await self.send_msg("POSITION_UPDATE", {
                             "position_id": lp["position_id"],
+                            "signal_id": lp["signal_id"],
                             "mt5_ticket": ticket,
+                            "direction": lp["direction"],
+                            "open_price": mp.get("open_price", lp["fill_price"]),
+                            "lots": lp["lots"],
                             "current_sl": mp["current_sl"],
                             "current_price": mp["current_price"],
                             "unrealized_pnl": mp["unrealized_pnl"],
                         })
 
-                # Detect positions we think are open but MT5 says closed → SL hit locally
+                # Detect positions we think are open but MT5 says closed.
                 for lp in local_positions:
                     ticket = lp["mt5_ticket"]
-                    if ticket not in mt5_tickets:
-                        # Position was closed by broker (SL hit or manual)
-                        # Query deal history to find exit price
-                        deals = executor.get_recent_deals(lp["open_ts"] - 60)
-                        exit_price = 0
-                        realized_pnl = 0
-                        for d in deals:
-                            if d["position_id"] == ticket:
-                                exit_price = d["price"]
-                                realized_pnl += d["profit"]
+                    if ticket in mt5_tickets:
+                        continue
+                    # Skip tickets WE are actively closing — avoids the race that
+                    # mislabels our own closes as "external_close".
+                    if ticket in self._closing_tickets:
+                        continue
 
-                        self.log.info(f"Detected external close of {lp['position_id']} @{exit_price:.2f}")
-                        self.state.close_position(lp["position_id"], {
-                            "close_ts": int(time.time()),
-                            "exit_price": exit_price,
-                            "exit_reason": "external_close",
-                            "realized_pnl": realized_pnl,
-                            "status": "CLOSED",
-                        })
-                        await self.send_msg("POSITION_CLOSED", {
-                            "position_id": lp["position_id"],
-                            "signal_id": lp["signal_id"],
-                            "exit_price": exit_price,
-                            "exit_time": int(time.time()),
-                            "realized_pnl": realized_pnl,
-                            "exit_reason": "external_close",
-                        })
+                    # Reliable close info keyed by position ticket
+                    info = executor.get_deals_by_position(ticket)
+                    if not info.get("found"):
+                        # Deal history not ready yet — retry next poll (don't emit zeros)
+                        self.log.debug(f"close detected for {lp['position_id']} but no deal yet; retrying")
+                        continue
+
+                    exit_price = info["exit_price"]
+                    realized_pnl = info["realized_pnl"]
+                    reason = info["reason"]  # sl_hit / tp_hit / manual_or_command / external_close
+
+                    # Fallback pnl reconstruction if broker gave price but no profit
+                    if realized_pnl == 0 and exit_price and lp["fill_price"] and lp["lots"]:
+                        realized_pnl = (exit_price - lp["fill_price"]) * lp["direction"] * lp["lots"]
+
+                    self.log.info(f"Position {lp['position_id']} closed @{exit_price:.2f} "
+                                  f"pnl={realized_pnl:.2f} reason={reason}")
+                    self.state.close_position(lp["position_id"], {
+                        "close_ts": int(time.time()),
+                        "exit_price": exit_price,
+                        "exit_reason": reason,
+                        "realized_pnl": realized_pnl,
+                        "status": "CLOSED",
+                    })
+                    await self.send_msg("POSITION_CLOSED", {
+                        "position_id": lp["position_id"],
+                        "signal_id": lp["signal_id"],
+                        "exit_price": exit_price,
+                        "exit_time": int(time.time()),
+                        "realized_pnl": realized_pnl,
+                        "exit_reason": reason,
+                    })
 
             except Exception as e:
                 self.log.error(f"position_poller: {e}")
@@ -695,6 +718,7 @@ class VMEngine:
         elif mt == "CLOSE_ALL_POSITIONS":
             positions = self.state.open_positions()
             for p in positions:
+                self._closing_tickets.add(p["mt5_ticket"])
                 ok, result = executor.close_position(p["symbol"], p["mt5_ticket"])
                 if ok:
                     self.state.close_position(p["position_id"], {
@@ -735,7 +759,7 @@ class VMEngine:
                 "account_balance": self.account_balance(),
                 "account_equity": self.account_equity(),
             })
-            self.log.info(f"Sent actual state: {len(open_positions)} open positions, {len(recent_deals)} deals")
+            self.log.debug(f"Sent actual state: {len(open_positions)} open positions, {len(recent_deals)} deals")
         except Exception as e:
             self.log.error(f"_report_actual_state failed: {e}")
             await self.send_error("REPORT_STATE_FAILED", str(e))

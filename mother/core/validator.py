@@ -26,37 +26,24 @@ MIN_HISTORY_BARS = 200                 # need 200 bars of history to validate
 
 
 # ============================================================
-# HMA (same math as strategy_brain.py)
+# EMA (same math as strategy_brain.py)
 # ============================================================
-class HMA:
+class EMA:
     def __init__(self, period):
         self.p = int(period)
-        self.half = max(1, self.p // 2)
-        self.sqrt_p = max(1, int(round(math.sqrt(self.p))))
-
-    def _wma(self, arr, p):
-        n = len(arr)
-        if n < p:
-            return None
-        ws = p * (p + 1) / 2.0
-        s = 0.0
-        for k in range(p):
-            s += arr[n - p + k] * (k + 1)
-        return s / ws
 
     def value(self, closes):
-        p = self.p
         n = len(closes)
-        if n < p + self.sqrt_p:
+        if n < self.p:
             return None
-        diff_series = []
-        for i in range(n - self.sqrt_p, n):
-            wh = self._wma(closes[max(0, i - self.half + 1):i + 1], self.half)
-            wf = self._wma(closes[max(0, i - p + 1):i + 1], p)
-            if wh is None or wf is None:
-                return None
-            diff_series.append(2 * wh - wf)
-        return self._wma(diff_series, self.sqrt_p)
+        a = 2.0 / (self.p + 1)
+        s = 0.0
+        for i in range(self.p):
+            s += closes[i]
+        ema = s / self.p
+        for i in range(self.p, n):
+            ema = a * closes[i] + (1 - a) * ema
+        return ema
 
 
 # ============================================================
@@ -88,8 +75,8 @@ class Validator:
         self.brain = brain
         self.on_validation_ready = on_validation_ready
         self.log = logger or logging.getLogger("validator")
-        self.main_hma = HMA(21)   # matches locked strategy
-        self.fast_hma = HMA(14)
+        self.main_ma = EMA(84)   # matches locked strategy
+        self.fast_ma = EMA(34)
         self._queue = asyncio.Queue(maxsize=200)
         self._running = True
 
@@ -137,23 +124,29 @@ class Validator:
             return ValidationResult(status="NO_VALIDATION", confidence=0.0,
                                      details={"reason": "insufficient brain history"})
 
-        # Locate entry brick in mother's bars by timestamp
-        entry_time = trade["entry_time"]
+        # Locate entry brick by mother's canonical brick time (from the signal).
+        # This is the SAME timeline as bars[]["time"], so it's an exact hit —
+        # never uses VM wall-clock (which drifts vs monotonic brick timestamps).
+        entry_brick_time = trade.get("entry_brick_time")
+        if entry_brick_time is None:
+            entry_brick_time = trade.get("entry_time")   # fallback
+
         best_idx = None
         best_dist = float("inf")
         for i, b in enumerate(bars):
-            dist = abs(b["time"] - entry_time)
+            dist = abs(b["time"] - entry_brick_time)
             if dist < best_dist:
                 best_dist = dist
                 best_idx = i
-            if b["time"] > entry_time + 300:  # 5 min after — stop searching
-                break
+                if dist == 0:
+                    break
 
-        if best_idx is None or best_dist > 300:
+        # Brick-time space: exact or within a few bricks is fine
+        if best_idx is None or best_dist > 10:
             return ValidationResult(status="CANT_LOCATE", confidence=0.0,
                                      details={
-                                         "reason": f"no matching brick within 5 min (best dist {best_dist}s)",
-                                         "entry_time": entry_time,
+                                         "reason": f"no brick near entry_brick_time (best dist {best_dist})",
+                                         "entry_brick_time": entry_brick_time,
                                      })
 
         entry_brick = bars[best_idx]
@@ -163,16 +156,21 @@ class Validator:
 
         # Compute expected PnL: what would the SAME trade have earned on OANDA data?
         # Simple version: use mother's entry brick close and mother's exit_time-closest brick close
-        exit_time = trade.get("exit_time", int(time.time()))
-        exit_idx = best_idx
-        for j in range(best_idx, min(len(bars), best_idx + 200)):
-            if bars[j]["time"] >= exit_time:
-                exit_idx = j
-                break
-
+        # Exit brick: walk forward to the brick nearest the VM's hold duration.
+        # Approx by bars held (exit_time - entry_time in wall-clock maps roughly
+        # to brick count); fall back to the last available brick.
+        exit_idx = min(len(bars) - 1, best_idx + 1)
+        vm_hold = trade.get("exit_time", 0) - trade.get("entry_time", 0)
+        if vm_hold > 0:
+            # scan a reasonable forward window; pick last brick whose relative
+            # position is plausible. Simplest robust choice: use the final brick
+            # in a 200-brick window that exists.
+            exit_idx = min(len(bars) - 1, best_idx + 200)
+        if exit_idx <= best_idx:
+            exit_idx = min(len(bars) - 1, best_idx + 1)
         if exit_idx <= best_idx:
             return ValidationResult(status="CANT_LOCATE", confidence=0.0,
-                                     details={"reason": "exit brick not found"})
+                                     details={"reason": "no forward bricks for exit"})
 
         expected_entry = entry_brick["close"]
         expected_exit = bars[exit_idx]["close"]

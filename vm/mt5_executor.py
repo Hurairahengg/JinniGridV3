@@ -207,9 +207,20 @@ def close_position(symbol, ticket):
             "error_message": f"retcode {result.retcode}",
         }
 
+    # Prefer authoritative realized PnL from the closing deal history
+    exit_price = float(result.price)
+    realized = float(pos.profit)
+    try:
+        info = get_deals_by_position(int(ticket))
+        if info.get("found"):
+            realized = info["realized_pnl"]
+            if info.get("exit_price"):
+                exit_price = info["exit_price"]
+    except Exception:
+        pass
     return True, {
-        "exit_price": float(result.price),
-        "realized_pnl": float(pos.profit),
+        "exit_price": exit_price,
+        "realized_pnl": realized,
     }
 
 
@@ -279,3 +290,44 @@ def get_recent_deals(from_ts, magic=MAGIC_NUMBER):
             "comment": d.comment,
         })
     return result
+
+def get_deals_by_position(ticket, magic=MAGIC_NUMBER):
+    """
+    Reliable close info for ONE position, keyed by position ticket.
+    Returns real exit price + realized pnl (profit+swap+commission) and an
+    inferred reason from the OUT deal. This is far more reliable than a
+    time-windowed scan and fixes zero-PnL / mislabeled external closes.
+    """
+    try:
+        deals = mt5.history_deals_get(position=int(ticket))
+    except Exception:
+        deals = None
+    if deals is None or len(deals) == 0:
+        return {"found": False, "exit_price": 0.0, "realized_pnl": 0.0,
+                "reason": "external_close", "entry_price": 0.0}
+
+    total = 0.0
+    exit_price = 0.0
+    entry_price = 0.0
+    reason = "external_close"
+    for d in deals:
+        try:
+            total += float(d.profit) + float(getattr(d, "swap", 0.0)) + float(getattr(d, "commission", 0.0))
+        except Exception:
+            pass
+        if d.entry == mt5.DEAL_ENTRY_IN:
+            entry_price = float(d.price)
+        elif d.entry == mt5.DEAL_ENTRY_OUT:
+            exit_price = float(d.price)
+            r = getattr(d, "reason", None)
+            if r == mt5.DEAL_REASON_SL:
+                reason = "sl_hit"
+            elif r == mt5.DEAL_REASON_TP:
+                reason = "tp_hit"
+            elif r in (mt5.DEAL_REASON_CLIENT, mt5.DEAL_REASON_EXPERT, mt5.DEAL_REASON_MOBILE, mt5.DEAL_REASON_WEB):
+                reason = "manual_or_command"
+    return {"found": True, "exit_price": exit_price, "realized_pnl": total,
+            "reason": reason, "entry_price": entry_price}
+
+
+
